@@ -10,7 +10,7 @@ from loguru import logger
 from scipy.spatial.transform import Rotation
 from tqdm import tqdm
 
-from robonav.util.helpers import ensured_path, parent_ensured_path
+from robonav.common.util.helpers import ensured_path, parent_ensured_path
 
 
 def parse_arguments():
