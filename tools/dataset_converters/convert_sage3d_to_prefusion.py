@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import math
 import os
 import pickle
@@ -17,11 +16,9 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from loguru import logger
 from PIL import Image
 from scipy.spatial.transform import Rotation
-
-
-LOGGER = logging.getLogger("sage3d_to_prefusion")
 
 
 def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
@@ -42,8 +39,8 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def _warning(scene: str, episode: int | None, camera: str | None, reason: str) -> None:
-    LOGGER.warning(
-        "source_scene=%s episode=%s camera=%s reason=%s",
+    logger.warning(
+        "source_scene={} episode={} camera={} reason={}",
         scene,
         "-" if episode is None else f"{episode:06d}",
         camera or "-",
@@ -516,12 +513,11 @@ def _process_scene(
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     args = parse_arguments(argv)
     input_root = args.input_scene_root
     output_root = args.output_scene_root
     if not input_root.is_dir():
-        LOGGER.error("input scene root is not a directory: %s", input_root)
+        logger.error("input scene root is not a directory: {}", input_root)
         return 2
     try:
         output_root.mkdir(parents=True, exist_ok=True)
@@ -532,7 +528,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             scene_dirs = [input_root / scene_id for scene_id in args.scene_ids]
         if not scene_dirs:
-            LOGGER.error("no source scenes selected")
+            logger.error("no source scenes selected")
             return 2
         reasons: Counter[str] = Counter()
         succeeded = skipped = existing = 0
@@ -549,12 +545,12 @@ def main(argv: list[str] | None = None) -> int:
             skipped += scene_skipped
             existing += scene_existing
     except Exception as error:
-        LOGGER.error("fatal conversion error: %s", error)
+        logger.error("fatal conversion error: {}", error)
         return 2
 
     reason_summary = ", ".join(f"{key}={value}" for key, value in sorted(reasons.items())) or "none"
-    LOGGER.info(
-        "summary source_scenes=%d successful_episodes=%d skipped=%d reasons=%s",
+    logger.info(
+        "summary source_scenes={} successful_episodes={} skipped={} reasons={}",
         len(scene_dirs),
         succeeded,
         skipped,
