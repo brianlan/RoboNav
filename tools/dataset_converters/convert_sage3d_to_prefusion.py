@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from tqdm import tqdm
 from loguru import logger
 from PIL import Image
 from scipy.spatial.transform import Rotation
@@ -321,7 +322,7 @@ def _copy_or_link(source: Path, destination: Path, clone: bool) -> None:
     if clone:
         shutil.copy2(source, destination)
     else:
-        destination.symlink_to(os.path.relpath(source, destination.parent))
+        destination.symlink_to(source.resolve())
 
 
 def _write_episode(
@@ -546,7 +547,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         reasons: Counter[str] = Counter()
         succeeded = skipped = existing = 0
-        for scene_dir in scene_dirs:
+        for scene_dir in tqdm(scene_dirs):
             if not scene_dir.is_dir():
                 _warning(scene_dir.name, None, None, "source scene directory is missing")
                 reasons["missing source scene"] += 1
