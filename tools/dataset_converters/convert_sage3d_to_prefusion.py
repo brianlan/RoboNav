@@ -87,11 +87,6 @@ def _profile_model(profile: dict[str, Any]) -> str:
 def _profile_intrinsic(profile: dict[str, Any]) -> list[float]:
     width, height = _profile_resolution(profile)
     model = _profile_model(profile)
-    coefficients = profile.get("fisheye_coefficients", profile.get("distortion_coefficients"))
-    if model == "opencv_fisheye" and (
-        not isinstance(coefficients, (list, tuple)) or len(coefficients) != 4
-    ):
-        raise ValueError("opencv_fisheye profile requires four coefficients")
     focal = profile.get("focal_length_pixels")
     if focal is None:
         focal = profile.get("focal_length_px")
@@ -99,6 +94,9 @@ def _profile_intrinsic(profile: dict[str, Any]) -> list[float]:
         hfov = float(profile["horizontal_fov_deg"])
         focal = width / (2.0 * math.tan(math.radians(hfov) / 2.0))
     if focal is None and model == "opencv_fisheye":
+        coefficients = profile.get("fisheye_coefficients", profile.get("distortion_coefficients"))
+        if not isinstance(coefficients, (list, tuple)) or len(coefficients) != 4:
+            raise ValueError("opencv_fisheye profile requires four coefficients")
         k1, k2, k3, k4 = map(float, coefficients)
         theta = math.radians(float(profile["horizontal_fov_deg"])) / 2.0
         theta2 = theta * theta
@@ -107,6 +105,8 @@ def _profile_intrinsic(profile: dict[str, Any]) -> list[float]:
             raise ValueError("opencv_fisheye angular polynomial must be finite and positive")
         focal = (width / 2.0) / theta_d
     if isinstance(focal, (list, tuple)):
+        if len(focal) != 2:
+            raise ValueError("focal length must be scalar or [fx, fy]")
         fx, fy = map(float, focal)
     elif focal is not None:
         fx = fy = float(focal)
@@ -116,6 +116,9 @@ def _profile_intrinsic(profile: dict[str, Any]) -> list[float]:
         raise ValueError("camera profile must have finite positive square-pixel focal length")
     intrinsic = [width / 2.0, height / 2.0, fx, fy]
     if model == "opencv_fisheye":
+        coefficients = profile.get("fisheye_coefficients", profile.get("distortion_coefficients"))
+        if not isinstance(coefficients, (list, tuple)) or len(coefficients) != 4:
+            raise ValueError("opencv_fisheye profile requires four coefficients")
         intrinsic.extend(float(value) for value in coefficients)
     if not np.isfinite(intrinsic).all():
         raise ValueError("camera intrinsic contains non-finite values")
@@ -175,17 +178,31 @@ def _validate_summary(
         profile_extrinsic.get("rotation_rpy_deg"),
         f"{mode} extrinsic rotation",
     )
+    snapshot = summary.get("camera_profile")
+    if not isinstance(snapshot, dict):
+        raise ValueError(f"{mode} summary lacks camera_profile")
+    _same(_profile_resolution(snapshot), _profile_resolution(profile), f"{mode} profile resolution")
+    _same(
+        snapshot.get("model", snapshot.get("camera_model")),
+        _profile_model(profile),
+        f"{mode} profile model",
+    )
+    snapshot_intrinsic = _profile_intrinsic(snapshot)
+    _same(snapshot_intrinsic, intrinsic, f"{mode} profile intrinsic")
+    snapshot_rotation, snapshot_translation = _profile_extrinsic(snapshot)
+    profile_rotation, profile_translation = _profile_extrinsic(profile)
+    _same(snapshot_rotation, profile_rotation, f"{mode} profile extrinsic rotation")
+    _same(snapshot_translation, profile_translation, f"{mode} profile extrinsic translation")
     if _profile_model(profile) == "opencv_fisheye":
         _same(summary.get("fisheye_coefficients"), intrinsic[4:], f"{mode} fisheye coefficients")
         radius = float(summary.get("forward_mask_radius_pixels", 0))
         if not math.isfinite(radius) or radius <= 0:
             raise ValueError(f"{mode} summary has invalid forward_mask_radius_pixels")
-    if mode == "depth":
-        if summary.get("depth_type") != "distance_to_camera":
-            raise ValueError(f"{mode} summary depth_type is not distance_to_camera")
-        depth_scale = float(summary.get("depth_scale", 0))
-        if not math.isfinite(depth_scale) or depth_scale <= 0:
-            raise ValueError(f"{mode} summary depth_scale must be positive")
+    if summary.get("depth_type") != "distance_to_camera":
+        raise ValueError(f"{mode} summary depth_type is not distance_to_camera")
+    depth_scale = float(summary.get("depth_scale", 0))
+    if not math.isfinite(depth_scale) or depth_scale <= 0:
+        raise ValueError(f"{mode} summary depth_scale must be positive")
 
 
 def _metadata_episode_records(
@@ -214,9 +231,12 @@ def _metadata_episode_records(
 
 def _frame_files(directory: Path, episode: int, suffix: str, frame_count: int) -> list[Path]:
     pattern = re.compile(rf"^episode_{episode:06d}_(\d+)\.{re.escape(suffix)}$", re.IGNORECASE)
+    prefix = f"episode_{episode:06d}_"
     indexed: dict[int, Path] = {}
     for path in directory.iterdir():
         match = pattern.fullmatch(path.name)
+        if path.name.startswith(prefix) and not match:
+            raise ValueError(f"unexpected {suffix} episode file {path.name}")
         if match:
             index = int(match.group(1))
             if index in indexed:
@@ -247,7 +267,10 @@ def _validate_image(path: Path, width: int, height: int, *, depth: bool) -> None
 def _trajectory(npz_path: Path, control_dt: float, t_output: float) -> dict[str, np.ndarray]:
     with np.load(npz_path, allow_pickle=False) as archive:
         required = ("time_s", "pose_world", "velocity_world_mps", "yaw_rate_radps")
-        arrays = {key: np.asarray(archive[key]) for key in required}
+        missing = [key for key in required if key not in archive]
+        if missing:
+            raise ValueError(f"optimized NPZ missing arrays {missing}")
+        arrays = {key: np.asarray(archive[key]) for key in archive.files}
     time_s = arrays["time_s"]
     if time_s.ndim != 1 or len(time_s) == 0 or not np.isfinite(time_s).all():
         raise ValueError("time_s must be a non-empty finite 1D array")
@@ -258,6 +281,10 @@ def _trajectory(npz_path: Path, control_dt: float, t_output: float) -> dict[str,
         raise ValueError("time_s does not have the configured fixed interval")
     if not np.isclose(time_s[-1], t_output, rtol=1e-6, atol=1e-8):
         raise ValueError("time_s endpoint does not match candidate T_output")
+    non_frame_arrays = {"spline_control_points"}
+    for key, array in arrays.items():
+        if key not in non_frame_arrays and (array.ndim == 0 or array.shape[0] != frame_count):
+            raise ValueError(f"per-frame array {key!r} has first dimension {array.shape[:1]}, expected {frame_count}")
     if arrays["pose_world"].shape != (frame_count, 3):
         raise ValueError("pose_world must have shape [K, 3]")
     if arrays["velocity_world_mps"].shape != (frame_count, 2):
@@ -355,6 +382,8 @@ def _write_episode(
                 "linear_velocity": rotation.T @ velocity_world,
                 "angular_velocity": rotation.T @ angular_world,
             }
+            if not all(np.isfinite(value).all() for value in ego_pose.values()):
+                raise ValueError(f"frame {index} ego pose contains non-finite values")
             frame_data = {
                 "camera_image": camera_images,
                 "camera_image_depth": depth_images,
@@ -383,6 +412,8 @@ def _camera_data(
     frame_count: int,
     profiles: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
+    if not rendered.is_dir():
+        raise ValueError("rendered directory is missing")
     actual = [path for path in sorted(rendered.iterdir(), key=lambda path: path.name) if path.is_dir() and path.name in profiles]
     if not actual:
         raise ValueError("no rendered camera matches trajectory manifest camera_profiles")
@@ -391,6 +422,8 @@ def _camera_data(
         camera_id = camera_dir.name
         try:
             profile = profiles[camera_id]
+            if not isinstance(profile, dict):
+                raise ValueError("camera profile is not an object")
             rgb_summary = _load_json(camera_dir / "rgb_render_summary.json")
             depth_summary = _load_json(camera_dir / "depth_render_summary.json")
             _validate_summary(rgb_summary, profile, source_scene_id, camera_id, "rgb")
@@ -446,6 +479,8 @@ def _process_scene(
     for record in records:
         episode: int | None = None
         try:
+            if not isinstance(record, dict):
+                raise ValueError("candidate episode record is not an object")
             episode = int(record["episode_index"])
             expected_name = f"episode_{episode:06d}.npz"
             if record.get("success") is not True or record.get("status") != "success":
@@ -459,6 +494,8 @@ def _process_scene(
             if not validation_record or validation_record.get("validated") is not True:
                 raise ValueError("independent validation did not pass")
             npz_path = scene_dir / "optimized_trajectories" / expected_name
+            if not npz_path.is_file():
+                raise ValueError("optimized NPZ is missing")
             target = output_root / f"sage3d-{source_scene_id}-{episode:06d}"
             if target.exists():
                 _warning(source_scene_id, episode, None, "target scene already exists")
@@ -499,6 +536,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         output_root.mkdir(parents=True, exist_ok=True)
+        if not output_root.is_dir():
+            raise NotADirectoryError(output_root)
         if args.scene_ids is None:
             scene_dirs = sorted((path for path in input_root.iterdir() if path.is_dir()), key=lambda path: path.name)
         else:
