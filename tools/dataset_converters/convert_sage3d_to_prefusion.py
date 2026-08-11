@@ -204,15 +204,28 @@ def _validate_summary(
         raise ValueError(f"{mode} summary depth_scale must be positive")
 
 
-def _validation_records(metadata: dict[str, Any]) -> dict[int, dict[str, Any]]:
+def _metadata_episode_records(
+    metadata: dict[str, Any], name: str, *, require_list: bool = False
+) -> tuple[list[Any], dict[int, dict[str, Any]]]:
     records = metadata.get("episodes", [])
     if isinstance(records, dict):
+        if require_list:
+            raise ValueError(f"{name} episodes is not a list")
         records = records.values()
-    result = {}
+    elif not isinstance(records, list):
+        raise ValueError(f"{name} episodes is not a list or object")
+    records = list(records)
+    indexed = {}
     for record in records:
         if isinstance(record, dict) and "episode_index" in record:
-            result[int(record["episode_index"])] = record
-    return result
+            try:
+                episode = int(record["episode_index"])
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if episode in indexed:
+                raise ValueError(f"duplicate {name} episode_index {episode}")
+            indexed[episode] = record
+    return records, indexed
 
 
 def _frame_files(directory: Path, episode: int, suffix: str, frame_count: int) -> list[Path]:
@@ -250,7 +263,7 @@ def _validate_image(path: Path, width: int, height: int, *, depth: bool) -> None
         raise ValueError(f"RGB must be HxWx3 uint8, got shape={array.shape} dtype={array.dtype}")
 
 
-def _trajectory(npz_path: Path, control_dt: float) -> dict[str, np.ndarray]:
+def _trajectory(npz_path: Path, control_dt: float, t_output: float) -> dict[str, np.ndarray]:
     with np.load(npz_path, allow_pickle=False) as archive:
         required = ("time_s", "pose_world", "velocity_world_mps", "yaw_rate_radps")
         missing = [key for key in required if key not in archive]
@@ -265,6 +278,8 @@ def _trajectory(npz_path: Path, control_dt: float) -> dict[str, np.ndarray]:
         raise ValueError("time_s must start at zero")
     if frame_count > 1 and not np.allclose(np.diff(time_s), control_dt, rtol=1e-6, atol=1e-8):
         raise ValueError("time_s does not have the configured fixed interval")
+    if not np.isclose(time_s[-1], t_output, rtol=1e-6, atol=1e-8):
+        raise ValueError("time_s endpoint does not match candidate T_output")
     non_frame_arrays = {"spline_control_points"}
     for key, array in arrays.items():
         if key not in non_frame_arrays and (array.ndim == 0 or array.shape[0] != frame_count):
@@ -452,17 +467,13 @@ def _process_scene(
         control_dt = float(candidates.get("effective_config", {}).get("control_dt_s"))
         if not math.isfinite(control_dt) or control_dt <= 0:
             raise ValueError("effective_config.control_dt_s must be positive")
+        records, _ = _metadata_episode_records(candidates, "candidate", require_list=True)
+        _, validated = _metadata_episode_records(validation, "validation")
     except Exception as error:
         _warning(source_scene_id, None, None, str(error))
         reasons["invalid source scene"] += 1
         return 0, 1, 0
 
-    validated = _validation_records(validation)
-    records = candidates.get("episodes", [])
-    if not isinstance(records, list):
-        _warning(source_scene_id, None, None, "candidate episodes is not a list")
-        reasons["invalid source scene"] += 1
-        return 0, 1, 0
     succeeded = skipped = existing = 0
     for record in records:
         episode: int | None = None
@@ -475,6 +486,9 @@ def _process_scene(
                 raise ValueError("candidate is not successful")
             if record.get("npz_filename") != expected_name:
                 raise ValueError(f"npz_filename must be {expected_name}")
+            t_output = float(record["T_output"])
+            if not math.isfinite(t_output) or t_output < 0:
+                raise ValueError("T_output must be finite and nonnegative")
             validation_record = validated.get(episode)
             if not validation_record or validation_record.get("validated") is not True:
                 raise ValueError("independent validation did not pass")
@@ -488,7 +502,7 @@ def _process_scene(
                 skipped += 1
                 existing += 1
                 continue
-            trajectory = _trajectory(npz_path, control_dt)
+            trajectory = _trajectory(npz_path, control_dt, t_output)
             frame_ids = _frame_ids(npz_path, len(trajectory["time_s"]), control_dt)
             cameras = _camera_data(
                 scene_dir / "rendered", source_scene_id, episode, len(frame_ids), profiles
