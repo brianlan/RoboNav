@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 import pickle
 import re
 import shutil
@@ -337,10 +336,7 @@ def _write_episode(
                 with Image.open(camera["depth_files"][index]) as image:
                     depth = np.asarray(image, dtype=np.uint16).astype(np.float32) / camera["depth_scale"]
                 np.savez_compressed(temporary / "camera_image_depth" / camera_id / depth_name, depth=depth)
-                camera_images[camera_id] = {
-                    "path": str(rgb_relative),
-                    "calibration": camera["calibration"],
-                }
+                camera_images[camera_id] = str(rgb_relative)
                 depth_images[camera_id] = str(depth_relative)
 
             x, y, yaw = trajectory["pose_world"][index]
@@ -445,7 +441,7 @@ def _process_scene(
         return 0, 1, 0
 
     succeeded = skipped = existing = 0
-    for record in records:
+    for record in tqdm(records, desc=f"processing {source_scene_id}"):
         episode: int | None = None
         try:
             episode = int(record["episode_index"])
@@ -510,7 +506,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         reasons: Counter[str] = Counter()
         succeeded = skipped = existing = 0
-        for scene_dir in tqdm(scene_dirs):
+        for scene_dir in scene_dirs:
             if not scene_dir.is_dir():
                 _warning(scene_dir.name, None, None, "source scene directory is missing")
                 reasons["missing source scene"] += 1
