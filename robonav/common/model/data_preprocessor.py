@@ -3,7 +3,7 @@ from typing import Any
 import torch
 from mmengine.model.base_model.data_preprocessor import BaseDataPreprocessor
 
-from robonav.common.registry import MODELS
+from robonav.registry import MODELS
 
 
 __all__ = ["FrameBatchMerger"]

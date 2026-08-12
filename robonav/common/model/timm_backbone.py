@@ -4,7 +4,7 @@ import timm
 from mmpretrain.models.backbones.timm_backbone import print_timm_feature_info
 from mmpretrain.utils import require
 
-from robonav.common.registry import MODELS
+from robonav.registry import MODELS
 from prefusion.models import BaseModel
 
 __all__ = ["TIMMBackbone"]

@@ -7,13 +7,12 @@ custom_imports = dict(
     imports=[
         "prefusion",
         "robonav",
-        "robonav.aqua",
-        "robonav.common",
         "mmdet",
         "mmengine",
     ],
     allow_failed_imports=False,
 )
+default_scope = "prefusion"
 
 backend_args = None
 
@@ -47,30 +46,30 @@ camera_settings = {
     ),
 }
 
-camera_mappings = [
+camera_mapping = [
     ("pinhole", "PINHOLE"),
 ]
 
 transformables = dict(
     camera_images=dict(
         type="CameraImageSet",
-        loader=dict(type="SyncCameraImageSetLoader", camera_mappings=camera_mappings),
+        loader=dict(type="SyncCameraImageSetLoader", camera_mapping=camera_mapping),
         tensor_smith=dict(
-            type="CameraImageTensor",
+            type="robonav.CameraImageTensor",
             means=[123.675, 116.280, 103.530],
             stds=[58.395, 57.120, 57.375],
         ),
     ),
     depth_camera_images=dict(
         type="CameraDepthSet",
-        loader=dict(type="CameraDepthSetLoader", camera_mappings=camera_mappings),
-        tensor_smith=dict(type="CameraDepthTensor", max_depth=5),
+        loader=dict(type="CameraDepthSetLoader", camera_mapping=camera_mapping),
+        tensor_smith=dict(type="robonav.CameraDepthTensor", max_depth=5),
     ),
     ego_poses=dict(type="EgoPoseSet"),
 )
 
 model_feeder = dict(
-    type="aqua.AquaModelFeeder"
+    type="robonav.AquaModelFeeder"
 )
 
 train_dataset = dict(
@@ -166,7 +165,7 @@ test_dataloader = dict(
 )
 
 model = dict(
-    type="robonav.aqua.AquaNet",
+    type="robonav.AquaNet",
     data_preprocessor=dict(
         type="robonav.FrameBatchMerger",
         device="cuda",
@@ -186,8 +185,8 @@ model = dict(
     ),
 )
 
-val_evaluator = dict(type="AccuracyPetr")
-test_evaluator = dict(type="AccuracyPetr")
+val_evaluator = dict(type="robonav.DummyAccuracyMetric")
+test_evaluator = dict(type="robonav.DummyAccuracyMetric")
 
 
 env_cfg = dict(

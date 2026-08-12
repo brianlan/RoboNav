@@ -3,7 +3,7 @@ import torch.nn as nn
 
 from prefusion import BaseModel
 
-from robonav.common.registry import MODELS
+from robonav.registry import MODELS
 
 __all__ = ["AquaNet"]
 
@@ -27,4 +27,3 @@ class AquaNet(BaseModel):
         **kwargs,
     ):
         feat = self.backbone(cameras)
-
