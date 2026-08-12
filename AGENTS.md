@@ -20,7 +20,20 @@ Before implementing:
 
 Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
 
-## 3. Surgical Changes
+## 3. Avoid Over-Defensive Validation
+
+Do not add validation merely to fail earlier or replace errors that the underlying operation would already raise clearly. Excessive defensive checks obscure the happy-path logic and increase maintenance cost.
+
+Add explicit validation primarily when violating an invariant could otherwise **silently propagate incorrect data or produce plausible-but-wrong results** (for example: wrong units, coordinate frames, semantic types, mismatched data, unintended broadcasting, or invalid values that downstream code would still accept).
+
+As a rule:
+
+* If the next operation will naturally fail with a clear, local error, let it fail.
+* If invalid data could continue through the pipeline without an obvious failure, validate it explicitly.
+* Avoid repeatedly re-validating invariants that have already been established at a trusted boundary.
+* Prefer readable core logic over exhaustive defensive checks. Validate semantics, not mechanics.
+
+## 4. Surgical Changes
 
 **Touch only what you must. Clean up only your own mess.**
 
@@ -36,7 +49,7 @@ When your changes create orphans:
 
 The test: Every changed line should trace directly to the user's request.
 
-## 4. Goal-Driven Execution
+## 5. Goal-Driven Execution
 
 **Define success criteria. Loop until verified.**
 

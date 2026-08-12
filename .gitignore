@@ -219,3 +219,6 @@ __marimo__/
 
 # vscode
 .vscode
+
+# training logs
+work_dirs
