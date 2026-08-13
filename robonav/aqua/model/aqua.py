@@ -21,10 +21,12 @@ class AquaNet(BaseModel):
         index_info=None,
         camera_images=None,
         camera_depths=None,
+        position_embedding=None,
         ego_poses=None,
         mode="loss",
         **kwargs,
     ):
         B = len(camera_images)
         camera_images = torch.row_stack(camera_images)
-        feat = self.backbone(camera_images)
+        pe = torch.row_stack(position_embedding)
+        feat = self.backbone(camera_images, pe)
