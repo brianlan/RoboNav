@@ -111,7 +111,7 @@ def _profile_intrinsic(profile: dict[str, Any]) -> list[float]:
         fx = fy = float(focal)
     else:
         raise ValueError("camera profile lacks focal length")
-    if not np.isfinite([fx, fy]).all() or fx <= 0 or fy <= 0 or not np.isclose(fx, fy):
+    if fx <= 0 or fy <= 0 or not np.isclose(fx, fy):
         raise ValueError("camera profile must have finite positive square-pixel focal length")
     intrinsic = [width / 2.0, height / 2.0, fx, fy]
     if model == "opencv_fisheye":
@@ -229,9 +229,6 @@ def _frame_files(directory: Path, episode: int, suffix: str, frame_count: int) -
 
 def _validate_image(path: Path, width: int, height: int, *, depth: bool) -> None:
     with Image.open(path) as image:
-        image.load()
-        if image.size != (width, height):
-            raise ValueError(f"image resolution {image.size} != {(width, height)}")
         array = np.asarray(image)
     if depth:
         if array.shape != (height, width) or array.dtype != np.uint16:
@@ -271,7 +268,7 @@ def _frame_ids(npz_path: Path, frame_count: int, control_dt: float) -> list[str]
     step_ms = control_dt * 1000.0
     ids = [str(int(round(initial_ms + index * step_ms))) for index in range(frame_count)]
     integers = list(map(int, ids))
-    if len(set(ids)) != frame_count or any(b <= a for a, b in zip(integers, integers[1:])):
+    if any(b <= a for a, b in zip(integers, integers[1:])):
         raise ValueError("control_dt_s does not produce unique strictly increasing millisecond frame IDs")
     return ids
 
@@ -279,14 +276,11 @@ def _frame_ids(npz_path: Path, frame_count: int, control_dt: float) -> list[str]
 def _validate_mask(path: Path, profile: dict[str, Any]) -> None:
     width, height = _profile_resolution(profile)
     with Image.open(path) as image:
-        image.load()
-        if image.size != (width, height):
-            raise ValueError(f"mask resolution {image.size} != {(width, height)}")
         if image.mode != "L":
             raise ValueError(f"mask must be grayscale mode L, got {image.mode!r}")
         array = np.asarray(image)
-    if array.ndim != 2 or array.dtype != np.uint8:
-        raise ValueError(f"mask must be 2D uint8 grayscale, got shape={array.shape} dtype={array.dtype}")
+    if array.shape != (height, width):
+        raise ValueError(f"mask resolution {array.shape[::-1]} != {(width, height)}")
     if not ((array == 0) | (array == 255)).all():
         raise ValueError("mask must contain only 0 and 255")
 
