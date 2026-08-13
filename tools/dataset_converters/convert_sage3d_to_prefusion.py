@@ -307,7 +307,7 @@ def _write_episode(
         frame_dir = temporary / "frame_info_pkl"
         frame_dir.mkdir()
         for camera_id, camera in cameras.items():
-            (temporary / "samples" / camera_id).mkdir(parents=True)
+            (temporary / "camera_image" / camera_id).mkdir(parents=True)
             (temporary / "camera_image_depth" / camera_id).mkdir(parents=True)
         (temporary / "self_mask").mkdir()
 
@@ -325,9 +325,9 @@ def _write_episode(
             for camera_id, camera in cameras.items():
                 rgb_name = f"{frame_id}.jpg"
                 depth_name = f"{frame_id}.npz"
-                rgb_relative = Path(scene_name) / "samples" / camera_id / rgb_name
+                rgb_relative = Path(scene_name) / "camera_image" / camera_id / rgb_name
                 depth_relative = Path(scene_name) / "camera_image_depth" / camera_id / depth_name
-                _copy_or_link(camera["rgb_files"][index], temporary / "samples" / camera_id / rgb_name, clone_images)
+                _copy_or_link(camera["rgb_files"][index], temporary / "camera_image" / camera_id / rgb_name, clone_images)
                 with Image.open(camera["depth_files"][index]) as image:
                     depth = np.asarray(image, dtype=np.uint16).astype(np.float32) / camera["depth_scale"]
                 np.savez_compressed(temporary / "camera_image_depth" / camera_id / depth_name, depth=depth)
