@@ -56,7 +56,11 @@ transformables = dict(
     ego_poses=dict(type="EgoPoseSet"),
 )
 
-model_feeder = dict(type="robonav.AquaModelFeeder")
+model_feeder = dict(
+    type="robonav.AquaModelFeeder",
+    pe_downsample_factor=2,
+    pe_range=(0, -5, 10, 5),
+)
 
 train_dataset = dict(
     type="StreamingSequenceBatchDataset",

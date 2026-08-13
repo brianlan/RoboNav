@@ -11,17 +11,25 @@ __all__ = ["AquaModelFeeder"]
 
 @MODEL_FEEDERS.register_module()
 class AquaModelFeeder(BaseModelFeeder):
-    def __init__(self, *args, debug=False, pe_downsample_factor=2, **kwargs):
+    def __init__(
+        self,
+        *args,
+        debug=False,
+        pe_downsample_factor=2,
+        pe_range=(-5, -5, 5, 5),
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.debug = debug
         self.pe_downsample_factor = pe_downsample_factor
+        self.pe_range = torch.tensor(pe_range)
 
     def process(self, frame_batch: list) -> dict | list:
         processed_batch: list[dict] = []
         for frame in frame_batch:
             frame_out = self._init_frame_out(frame)
             frame_out.update(**self._process_transformables(frame))
-            frame_out.update(**self._create_camera_pe(frame_out))
+            self._create_camera_pe(frame_out)
             if self.debug:
                 frame_out["transformables"] = frame["transformables"]
             processed_batch.append(frame_out)
@@ -46,6 +54,7 @@ class AquaModelFeeder(BaseModelFeeder):
                 out["camera_images"] = img_tensor
                 out["ego_masks"] = ego_mask
                 out["camera_ids"] = cam_ids
+                out["camera_types"] = [t.cam_type for t in camera_images]
                 out["intrinsic"] = torch.vstack(
                     [torch.tensor(t.intrinsic)[None] for t in camera_images]
                 )
@@ -71,4 +80,5 @@ class AquaModelFeeder(BaseModelFeeder):
     def _create_camera_pe(self, frame_out_dict):
         """Create position embedding for camera"""
         intr, extr = frame_out_dict["intrinsic"], frame_out_dict["extrinsic"]
+        cam_type = frame_out_dict["camera_types"]
         a = 10
