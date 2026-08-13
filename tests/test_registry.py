@@ -9,7 +9,7 @@ def test_robonav_registrations():
         (MODELS, "FrameBatchMerger", "robonav.common.model.data_preprocessor"),
         (MODEL_FEEDERS, "AquaModelFeeder", "robonav.aqua.model_feeder.aqua_model_feeder"),
         (TENSOR_SMITHS, "CameraImageTensor", "robonav.aqua.tensor_smith.camera_tensor_smith"),
-        (METRICS, "DummyAccuracyMetric", "robonav.metric"),
+        (METRICS, "DummyAccuracyMetric", "robonav.common.metric"),
     )
 
     for registry, name, module in expected:
