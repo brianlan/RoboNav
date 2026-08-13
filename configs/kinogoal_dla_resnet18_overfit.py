@@ -26,16 +26,16 @@ possible_sequence_lengths = [20]
 
 # Virtual Camera settings
 camera_settings = {
-    "PINHOLE": dict(
-        cam_type="PerspectiveCamera",
-        resolution=(320, 192),
+    "FISHEYE": dict(
+        cam_type="FisheyeCamera",
+        resolution=(512, 384),
         euler_angles=[-90, 0, -90],
-        intrinsic=[159.5, 95.5, 224.3, 224.3],
+        intrinsic=[255.5, 191.5, 130.72, 130.72, 0.1, 0, 0, 0],
     ),
 }
 
 camera_mapping = [
-    ("pinhole", "PINHOLE"),
+    ("fisheye", "FISHEYE"),
 ]
 
 transformables = dict(
@@ -56,9 +56,7 @@ transformables = dict(
     ego_poses=dict(type="EgoPoseSet"),
 )
 
-model_feeder = dict(
-    type="robonav.AquaModelFeeder"
-)
+model_feeder = dict(type="robonav.AquaModelFeeder")
 
 train_dataset = dict(
     type="StreamingSequenceBatchDataset",
@@ -159,8 +157,7 @@ model = dict(
         device="cuda",
     ),
     backbone=dict(
-        type="robonav.TIMMBackbone",
-        model_name="resnet18d.ra4_e3600_r224_in1k",
+        type="robonav.AquaResNet18",
         features_only=True,
         pretrained=True,
         out_indices=(1, 2, 3, 4),
@@ -244,9 +241,7 @@ default_hooks = dict(
     sampler_seed=dict(type="DistSamplerSeedHook"),
 )
 
-custom_hooks = [
-
-]
+custom_hooks = []
 
 work_dir = f"./work_dirs/{experiment_name}_{today}"
 # load_from = "./ckpts/wuhan_vov_pretrain_0601.pth"

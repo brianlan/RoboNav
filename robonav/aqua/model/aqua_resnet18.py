@@ -124,13 +124,13 @@ class AquaResNet18(BaseModel):
             elif isinstance(module, BasicBlock):
                 nn.init.zeros_(module.bn2.weight)
 
-    def forward(self, x):
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.act1(x)
-        x = self.maxpool(x)
+    def forward(self, rgb, pe):
+        rgb = self.conv1(rgb)
+        rgb = self.bn1(rgb)
+        rgb = self.act1(rgb)
+        rgb = self.maxpool(rgb)
 
-        x1 = self.layer1(x)
+        x1 = self.layer1(rgb)
         x2 = self.layer2(x1)
         x3 = self.layer3(x2)
         x4 = self.layer4(x3)
