@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 
 from prefusion import BaseModel
 
@@ -20,10 +19,12 @@ class AquaNet(BaseModel):
         self,
         *,
         index_info=None,
-        cameras=None,
-        depths=None,
+        camera_images=None,
+        camera_depths=None,
         ego_poses=None,
         mode="loss",
         **kwargs,
     ):
-        feat = self.backbone(cameras)
+        B = len(camera_images)
+        camera_images = torch.row_stack(camera_images)
+        feat = self.backbone(camera_images)

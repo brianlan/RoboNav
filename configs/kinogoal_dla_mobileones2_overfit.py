@@ -60,7 +60,7 @@ transformables = dict(
             stds=[58.395, 57.120, 57.375],
         ),
     ),
-    depth_camera_images=dict(
+    camera_depths=dict(
         type="CameraDepthSet",
         loader=dict(type="CameraDepthSetLoader", camera_mapping=camera_mapping),
         tensor_smith=dict(type="robonav.CameraDepthTensor", max_depth=5),
