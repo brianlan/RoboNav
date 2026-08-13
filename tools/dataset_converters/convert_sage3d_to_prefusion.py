@@ -30,6 +30,74 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def main(argv: list[str] | None = None) -> int:
+    args = parse_arguments(argv)
+    input_root = args.input_scene_root
+    output_root = args.output_scene_root
+    if not input_root.is_dir():
+        logger.error("input scene root is not a directory: {}", input_root)
+        return 2
+    try:
+        output_root.mkdir(parents=True, exist_ok=True)
+        scene_dirs = _select_scene_dirs(input_root, args.scene_ids)
+        if not scene_dirs:
+            logger.error("no source scenes selected")
+            return 2
+        succeeded, skipped, existing, reasons = _convert_scenes(
+            scene_dirs, output_root, args.clone_camera_images
+        )
+    except Exception as error:
+        logger.error("fatal conversion error: {}", error)
+        return 2
+
+    _report_summary(len(scene_dirs), succeeded, skipped, reasons)
+    return 0 if succeeded > 0 or existing > 0 else 1
+
+
+def _report_summary(
+    source_scene_count: int,
+    succeeded: int,
+    skipped: int,
+    reasons: Counter[str],
+) -> None:
+    reason_summary = ", ".join(f"{key}={value}" for key, value in sorted(reasons.items())) or "none"
+    logger.info(
+        "summary source_scenes={} successful_episodes={} skipped={} reasons={}",
+        source_scene_count,
+        succeeded,
+        skipped,
+        reason_summary,
+    )
+
+
+def _select_scene_dirs(input_root: Path, scene_ids: list[str] | None) -> list[Path]:
+    if scene_ids is not None:
+        return [input_root / scene_id for scene_id in scene_ids]
+    return sorted(
+        (path for path in input_root.iterdir() if path.is_dir()), key=lambda path: path.name
+    )
+
+
+def _convert_scenes(
+    scene_dirs: list[Path], output_root: Path, clone_images: bool
+) -> tuple[int, int, int, Counter[str]]:
+    reasons: Counter[str] = Counter()
+    succeeded = skipped = existing = 0
+    for scene_dir in scene_dirs:
+        if not scene_dir.is_dir():
+            _warning(scene_dir.name, None, None, "source scene directory is missing")
+            reasons["missing source scene"] += 1
+            skipped += 1
+            continue
+        scene_succeeded, scene_skipped, scene_existing = _process_scene(
+            scene_dir, output_root, clone_images, reasons
+        )
+        succeeded += scene_succeeded
+        skipped += scene_skipped
+        existing += scene_existing
+    return succeeded, skipped, existing, reasons
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as stream:
         value = json.load(stream)
@@ -292,6 +360,106 @@ def _copy_or_link(source: Path, destination: Path, clone: bool) -> None:
         destination.symlink_to(source.resolve())
 
 
+def _initialize_scene(
+    temporary: Path,
+    scene_name: str,
+    cameras: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    (temporary / "frame_info_pkl").mkdir()
+    for camera_id in cameras:
+        (temporary / "camera_image" / camera_id).mkdir(parents=True)
+        (temporary / "camera_image_depth" / camera_id).mkdir(parents=True)
+    (temporary / "self_mask").mkdir()
+
+    calibrations = {camera_id: camera["calibration"] for camera_id, camera in cameras.items()}
+    masks = {}
+    for camera_id, camera in cameras.items():
+        mask_relative = Path(scene_name) / "self_mask" / f"{camera_id}.png"
+        masks[camera_id] = str(mask_relative)
+        shutil.copy2(camera["mask_file"], temporary / "self_mask" / f"{camera_id}.png")
+    return {"camera_mask": masks, "calibration": calibrations}
+
+
+def _write_frame_images(
+    temporary: Path,
+    scene_name: str,
+    frame_id: str,
+    frame_index: int,
+    cameras: dict[str, dict[str, Any]],
+    clone_images: bool,
+) -> tuple[dict[str, str], dict[str, str]]:
+    camera_images = {}
+    depth_images = {}
+    for camera_id, camera in cameras.items():
+        rgb_name = f"{frame_id}.jpg"
+        depth_name = f"{frame_id}.npz"
+        rgb_relative = Path(scene_name) / "camera_image" / camera_id / rgb_name
+        depth_relative = Path(scene_name) / "camera_image_depth" / camera_id / depth_name
+        _copy_or_link(
+            camera["rgb_files"][frame_index],
+            temporary / "camera_image" / camera_id / rgb_name,
+            clone_images,
+        )
+        with Image.open(camera["depth_files"][frame_index]) as image:
+            depth = np.asarray(image, dtype=np.uint16).astype(np.float32) / camera["depth_scale"]
+        np.savez_compressed(temporary / "camera_image_depth" / camera_id / depth_name, depth=depth)
+        camera_images[camera_id] = str(rgb_relative)
+        depth_images[camera_id] = str(depth_relative)
+    return camera_images, depth_images
+
+
+def _ego_pose(trajectory: dict[str, np.ndarray], frame_index: int) -> dict[str, np.ndarray]:
+    x, y, yaw = trajectory["pose_world"][frame_index]
+    c, s = math.cos(float(yaw)), math.sin(float(yaw))
+    rotation = np.asarray([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+    velocity_world = np.asarray(
+        [*trajectory["velocity_world_mps"][frame_index], 0.0], dtype=np.float64
+    )
+    angular_world = np.asarray(
+        [0.0, 0.0, trajectory["yaw_rate_radps"][frame_index]], dtype=np.float64
+    )
+    ego_pose = {
+        "rotation": rotation,
+        "translation": np.asarray([x, y, 0.0], dtype=np.float64),
+        "linear_velocity": rotation.T @ velocity_world,
+        "angular_velocity": rotation.T @ angular_world,
+    }
+    if not all(np.isfinite(value).all() for value in ego_pose.values()):
+        raise ValueError(f"frame {frame_index} ego pose contains non-finite values")
+    return ego_pose
+
+
+def _write_frame(
+    temporary: Path,
+    scene_name: str,
+    frame_index: int,
+    frame_id: str,
+    trajectory: dict[str, np.ndarray],
+    cameras: dict[str, dict[str, Any]],
+    scene_info: dict[str, Any],
+    clone_images: bool,
+) -> str:
+    camera_images, depth_images = _write_frame_images(
+        temporary, scene_name, frame_id, frame_index, cameras, clone_images
+    )
+    frame_data = {
+        "camera_image": camera_images,
+        "camera_image_depth": depth_images,
+        "ego_pose": _ego_pose(trajectory, frame_index),
+        "scene_info": scene_info,
+    }
+    frame_name = f"{frame_id}.pkl"
+    with (temporary / "frame_info_pkl" / frame_name).open("wb") as stream:
+        pickle.dump(frame_data, stream, protocol=pickle.HIGHEST_PROTOCOL)
+    return str(Path(scene_name) / "frame_info_pkl" / frame_name)
+
+
+def _write_scene_index(temporary: Path, scene_name: str, frame_index: dict[str, str]) -> None:
+    info = {scene_name: {"scene_info": {}, "frame_info": frame_index}}
+    with (temporary / "info.pkl").open("wb") as stream:
+        pickle.dump(info, stream, protocol=pickle.HIGHEST_PROTOCOL)
+
+
 def _write_episode(
     source_scene_id: str,
     episode: int,
@@ -304,64 +472,21 @@ def _write_episode(
     scene_name = f"sage3d-{source_scene_id}-{episode:06d}"
     temporary = Path(tempfile.mkdtemp(prefix=f".{scene_name}.", dir=output_root))
     try:
-        frame_dir = temporary / "frame_info_pkl"
-        frame_dir.mkdir()
-        for camera_id, camera in cameras.items():
-            (temporary / "camera_image" / camera_id).mkdir(parents=True)
-            (temporary / "camera_image_depth" / camera_id).mkdir(parents=True)
-        (temporary / "self_mask").mkdir()
-
-        calibrations = {camera_id: camera["calibration"] for camera_id, camera in cameras.items()}
-        masks = {}
-        for camera_id, camera in cameras.items():
-            mask_relative = Path(scene_name) / "self_mask" / f"{camera_id}.png"
-            masks[camera_id] = str(mask_relative)
-            shutil.copy2(camera["mask_file"], temporary / "self_mask" / f"{camera_id}.png")
-
-        frame_index = {}
-        for index, frame_id in enumerate(frame_ids):
-            camera_images = {}
-            depth_images = {}
-            for camera_id, camera in cameras.items():
-                rgb_name = f"{frame_id}.jpg"
-                depth_name = f"{frame_id}.npz"
-                rgb_relative = Path(scene_name) / "camera_image" / camera_id / rgb_name
-                depth_relative = Path(scene_name) / "camera_image_depth" / camera_id / depth_name
-                _copy_or_link(camera["rgb_files"][index], temporary / "camera_image" / camera_id / rgb_name, clone_images)
-                with Image.open(camera["depth_files"][index]) as image:
-                    depth = np.asarray(image, dtype=np.uint16).astype(np.float32) / camera["depth_scale"]
-                np.savez_compressed(temporary / "camera_image_depth" / camera_id / depth_name, depth=depth)
-                camera_images[camera_id] = str(rgb_relative)
-                depth_images[camera_id] = str(depth_relative)
-
-            x, y, yaw = trajectory["pose_world"][index]
-            c, s = math.cos(float(yaw)), math.sin(float(yaw))
-            rotation = np.asarray([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
-            translation = np.asarray([x, y, 0.0], dtype=np.float64)
-            velocity_world = np.asarray([*trajectory["velocity_world_mps"][index], 0.0], dtype=np.float64)
-            angular_world = np.asarray([0.0, 0.0, trajectory["yaw_rate_radps"][index]], dtype=np.float64)
-            ego_pose = {
-                "rotation": rotation,
-                "translation": translation,
-                "linear_velocity": rotation.T @ velocity_world,
-                "angular_velocity": rotation.T @ angular_world,
-            }
-            if not all(np.isfinite(value).all() for value in ego_pose.values()):
-                raise ValueError(f"frame {index} ego pose contains non-finite values")
-            frame_data = {
-                "camera_image": camera_images,
-                "camera_image_depth": depth_images,
-                "ego_pose": ego_pose,
-                "scene_info": {"camera_mask": masks, "calibration": calibrations},
-            }
-            frame_path = frame_dir / f"{frame_id}.pkl"
-            with frame_path.open("wb") as stream:
-                pickle.dump(frame_data, stream, protocol=pickle.HIGHEST_PROTOCOL)
-            frame_index[frame_id] = str(Path(scene_name) / "frame_info_pkl" / frame_path.name)
-
-        info = {scene_name: {"scene_info": {}, "frame_info": frame_index}}
-        with (temporary / "info.pkl").open("wb") as stream:
-            pickle.dump(info, stream, protocol=pickle.HIGHEST_PROTOCOL)
+        scene_info = _initialize_scene(temporary, scene_name, cameras)
+        frame_index = {
+            frame_id: _write_frame(
+                temporary,
+                scene_name,
+                index,
+                frame_id,
+                trajectory,
+                cameras,
+                scene_info,
+                clone_images,
+            )
+            for index, frame_id in enumerate(frame_ids)
+        }
+        _write_scene_index(temporary, scene_name, frame_index)
         temporary.rename(output_root / scene_name)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
@@ -369,45 +494,142 @@ def _write_episode(
     return scene_name
 
 
-def _camera_data(
+def _load_camera(
+    camera_dir: Path,
+    source_scene_id: str,
+    episode: int,
+    frame_count: int,
+    profile: dict[str, Any],
+) -> dict[str, Any]:
+    camera_id = camera_dir.name
+    try:
+        rgb_summary = _load_json(camera_dir / "rgb_render_summary.json")
+        depth_summary = _load_json(camera_dir / "depth_render_summary.json")
+        _validate_summary(rgb_summary, profile, source_scene_id, camera_id, "rgb")
+        _validate_summary(depth_summary, profile, source_scene_id, camera_id, "depth")
+        width, height = _profile_resolution(profile)
+        rgb_files = _frame_files(camera_dir / "observation.images.rgb", episode, "jpg", frame_count)
+        depth_files = _frame_files(
+            camera_dir / "observation.images.depth", episode, "png", frame_count
+        )
+        for path in rgb_files:
+            _validate_image(path, width, height, depth=False)
+        for path in depth_files:
+            _validate_image(path, width, height, depth=True)
+        mask_file = camera_dir / "valid_pixel_mask.png"
+        _validate_mask(mask_file, profile)
+        return {
+            "profile": profile,
+            "calibration": _calibration(profile),
+            "rgb_files": rgb_files,
+            "depth_files": depth_files,
+            "depth_scale": float(depth_summary["depth_scale"]),
+            "mask_file": mask_file,
+        }
+    except Exception as error:
+        raise ValueError(f"camera={camera_id}: {error}") from error
+
+
+def _load_cameras(
     rendered: Path,
     source_scene_id: str,
     episode: int,
     frame_count: int,
     profiles: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
-    actual = [path for path in sorted(rendered.iterdir(), key=lambda path: path.name) if path.is_dir() and path.name in profiles]
-    if not actual:
+    camera_dirs = [
+        path
+        for path in sorted(rendered.iterdir(), key=lambda path: path.name)
+        if path.is_dir() and path.name in profiles
+    ]
+    if not camera_dirs:
         raise ValueError("no rendered camera matches trajectory manifest camera_profiles")
-    cameras = {}
-    for camera_dir in actual:
-        camera_id = camera_dir.name
-        try:
-            profile = profiles[camera_id]
-            rgb_summary = _load_json(camera_dir / "rgb_render_summary.json")
-            depth_summary = _load_json(camera_dir / "depth_render_summary.json")
-            _validate_summary(rgb_summary, profile, source_scene_id, camera_id, "rgb")
-            _validate_summary(depth_summary, profile, source_scene_id, camera_id, "depth")
-            width, height = _profile_resolution(profile)
-            rgb_files = _frame_files(camera_dir / "observation.images.rgb", episode, "jpg", frame_count)
-            depth_files = _frame_files(camera_dir / "observation.images.depth", episode, "png", frame_count)
-            for path in rgb_files:
-                _validate_image(path, width, height, depth=False)
-            for path in depth_files:
-                _validate_image(path, width, height, depth=True)
-            mask_file = camera_dir / "valid_pixel_mask.png"
-            _validate_mask(mask_file, profile)
-            cameras[camera_id] = {
-                "profile": profile,
-                "calibration": _calibration(profile),
-                "rgb_files": rgb_files,
-                "depth_files": depth_files,
-                "depth_scale": float(depth_summary["depth_scale"]),
-                "mask_file": mask_file,
-            }
-        except Exception as error:
-            raise ValueError(f"camera={camera_id}: {error}") from error
-    return cameras
+    return {
+        camera_dir.name: _load_camera(
+            camera_dir,
+            source_scene_id,
+            episode,
+            frame_count,
+            profiles[camera_dir.name],
+        )
+        for camera_dir in camera_dirs
+    }
+
+
+def _load_scene_inputs(
+    scene_dir: Path,
+) -> tuple[dict[str, Any], float, list[Any], dict[int, dict[str, Any]]]:
+    source_scene_id = scene_dir.name
+    manifest = _load_json(scene_dir / "trajectories" / "trajectory_manifest.json")
+    candidates = _load_json(scene_dir / "optimized_trajectories" / "candidate_metadata.json")
+    validation = _load_json(scene_dir / "optimized_trajectories" / "validation_metadata.json")
+    for name, metadata in (
+        ("manifest", manifest),
+        ("candidate", candidates),
+        ("validation", validation),
+    ):
+        if str(metadata.get("scene_id")) != source_scene_id:
+            raise ValueError(f"{name} scene_id mismatch")
+    profiles = manifest.get("camera_profiles")
+    if not isinstance(profiles, dict) or not profiles:
+        raise ValueError("trajectory manifest has no camera_profiles")
+    control_dt = float(candidates.get("effective_config", {}).get("control_dt_s"))
+    if not math.isfinite(control_dt) or control_dt <= 0:
+        raise ValueError("effective_config.control_dt_s must be positive")
+    records, _ = _metadata_episode_records(candidates, "candidate", require_list=True)
+    _, validated = _metadata_episode_records(validation, "validation")
+    return profiles, control_dt, records, validated
+
+
+def _validate_episode_record(
+    record: dict[str, Any], episode: int, validated: dict[int, dict[str, Any]]
+) -> tuple[str, float]:
+    expected_name = f"episode_{episode:06d}.npz"
+    if record.get("success") is not True or record.get("status") != "success":
+        raise ValueError("candidate is not successful")
+    if record.get("npz_filename") != expected_name:
+        raise ValueError(f"npz_filename must be {expected_name}")
+    t_output = float(record["T_output"])
+    if not math.isfinite(t_output) or t_output < 0:
+        raise ValueError("T_output must be finite and nonnegative")
+    validation_record = validated.get(episode)
+    if not validation_record or validation_record.get("validated") is not True:
+        raise ValueError("independent validation did not pass")
+    return expected_name, t_output
+
+
+def _convert_episode(
+    scene_dir: Path,
+    episode: int,
+    record: dict[str, Any],
+    validated: dict[int, dict[str, Any]],
+    profiles: dict[str, Any],
+    control_dt: float,
+    output_root: Path,
+    clone_images: bool,
+) -> bool:
+    source_scene_id = scene_dir.name
+    expected_name, t_output = _validate_episode_record(record, episode, validated)
+    npz_path = scene_dir / "optimized_trajectories" / expected_name
+    target = output_root / f"sage3d-{source_scene_id}-{episode:06d}"
+    if target.exists():
+        return False
+
+    trajectory = _trajectory(npz_path, control_dt, t_output)
+    frame_ids = _frame_ids(npz_path, len(trajectory["time_s"]), control_dt)
+    cameras = _load_cameras(
+        scene_dir / "rendered", source_scene_id, episode, len(frame_ids), profiles
+    )
+    _write_episode(
+        source_scene_id,
+        episode,
+        output_root,
+        trajectory,
+        frame_ids,
+        cameras,
+        clone_images,
+    )
+    return True
 
 
 def _process_scene(
@@ -418,20 +640,7 @@ def _process_scene(
 ) -> tuple[int, int, int]:
     source_scene_id = scene_dir.name
     try:
-        manifest = _load_json(scene_dir / "trajectories" / "trajectory_manifest.json")
-        candidates = _load_json(scene_dir / "optimized_trajectories" / "candidate_metadata.json")
-        validation = _load_json(scene_dir / "optimized_trajectories" / "validation_metadata.json")
-        for name, metadata in (("manifest", manifest), ("candidate", candidates), ("validation", validation)):
-            if str(metadata.get("scene_id")) != source_scene_id:
-                raise ValueError(f"{name} scene_id mismatch")
-        profiles = manifest.get("camera_profiles")
-        if not isinstance(profiles, dict) or not profiles:
-            raise ValueError("trajectory manifest has no camera_profiles")
-        control_dt = float(candidates.get("effective_config", {}).get("control_dt_s"))
-        if not math.isfinite(control_dt) or control_dt <= 0:
-            raise ValueError("effective_config.control_dt_s must be positive")
-        records, _ = _metadata_episode_records(candidates, "candidate", require_list=True)
-        _, validated = _metadata_episode_records(validation, "validation")
+        profiles, control_dt, records, validated = _load_scene_inputs(scene_dir)
     except Exception as error:
         _warning(source_scene_id, None, None, str(error))
         reasons["invalid source scene"] += 1
@@ -442,40 +651,23 @@ def _process_scene(
         episode: int | None = None
         try:
             episode = int(record["episode_index"])
-            expected_name = f"episode_{episode:06d}.npz"
-            if record.get("success") is not True or record.get("status") != "success":
-                raise ValueError("candidate is not successful")
-            if record.get("npz_filename") != expected_name:
-                raise ValueError(f"npz_filename must be {expected_name}")
-            t_output = float(record["T_output"])
-            if not math.isfinite(t_output) or t_output < 0:
-                raise ValueError("T_output must be finite and nonnegative")
-            validation_record = validated.get(episode)
-            if not validation_record or validation_record.get("validated") is not True:
-                raise ValueError("independent validation did not pass")
-            npz_path = scene_dir / "optimized_trajectories" / expected_name
-            target = output_root / f"sage3d-{source_scene_id}-{episode:06d}"
-            if target.exists():
+            converted = _convert_episode(
+                scene_dir,
+                episode,
+                record,
+                validated,
+                profiles,
+                control_dt,
+                output_root,
+                clone_images,
+            )
+            if converted:
+                succeeded += 1
+            else:
                 _warning(source_scene_id, episode, None, "target scene already exists")
                 reasons["target exists"] += 1
                 skipped += 1
                 existing += 1
-                continue
-            trajectory = _trajectory(npz_path, control_dt, t_output)
-            frame_ids = _frame_ids(npz_path, len(trajectory["time_s"]), control_dt)
-            cameras = _camera_data(
-                scene_dir / "rendered", source_scene_id, episode, len(frame_ids), profiles
-            )
-            _write_episode(
-                source_scene_id,
-                episode,
-                output_root,
-                trajectory,
-                frame_ids,
-                cameras,
-                clone_images,
-            )
-            succeeded += 1
         except Exception as error:
             message = str(error)
             camera_match = re.search(r"camera=([^:]+):", message)
@@ -483,51 +675,6 @@ def _process_scene(
             reasons["invalid episode"] += 1
             skipped += 1
     return succeeded, skipped, existing
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = parse_arguments(argv)
-    input_root = args.input_scene_root
-    output_root = args.output_scene_root
-    if not input_root.is_dir():
-        logger.error("input scene root is not a directory: {}", input_root)
-        return 2
-    try:
-        output_root.mkdir(parents=True, exist_ok=True)
-        if args.scene_ids is None:
-            scene_dirs = sorted((path for path in input_root.iterdir() if path.is_dir()), key=lambda path: path.name)
-        else:
-            scene_dirs = [input_root / scene_id for scene_id in args.scene_ids]
-        if not scene_dirs:
-            logger.error("no source scenes selected")
-            return 2
-        reasons: Counter[str] = Counter()
-        succeeded = skipped = existing = 0
-        for scene_dir in scene_dirs:
-            if not scene_dir.is_dir():
-                _warning(scene_dir.name, None, None, "source scene directory is missing")
-                reasons["missing source scene"] += 1
-                skipped += 1
-                continue
-            scene_succeeded, scene_skipped, scene_existing = _process_scene(
-                scene_dir, output_root, args.clone_camera_images, reasons
-            )
-            succeeded += scene_succeeded
-            skipped += scene_skipped
-            existing += scene_existing
-    except Exception as error:
-        logger.error("fatal conversion error: {}", error)
-        return 2
-
-    reason_summary = ", ".join(f"{key}={value}" for key, value in sorted(reasons.items())) or "none"
-    logger.info(
-        "summary source_scenes={} successful_episodes={} skipped={} reasons={}",
-        len(scene_dirs),
-        succeeded,
-        skipped,
-        reason_summary,
-    )
-    return 0 if succeeded > 0 or existing > 0 else 1
 
 
 if __name__ == "__main__":
