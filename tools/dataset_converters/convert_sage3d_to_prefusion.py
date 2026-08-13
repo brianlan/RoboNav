@@ -176,9 +176,6 @@ def _validate_summary(
     )
     if _profile_model(profile) == "opencv_fisheye":
         _same(summary.get("fisheye_coefficients"), intrinsic[4:], f"{mode} fisheye coefficients")
-        radius = float(summary.get("forward_mask_radius_pixels", 0))
-        if not math.isfinite(radius) or radius <= 0:
-            raise ValueError(f"{mode} summary has invalid forward_mask_radius_pixels")
     if mode == "depth":
         if summary.get("depth_type") != "distance_to_camera":
             raise ValueError(f"{mode} summary depth_type is not distance_to_camera")
@@ -279,15 +276,19 @@ def _frame_ids(npz_path: Path, frame_count: int, control_dt: float) -> list[str]
     return ids
 
 
-def _write_mask(path: Path, profile: dict[str, Any], summary: dict[str, Any]) -> None:
+def _validate_mask(path: Path, profile: dict[str, Any]) -> None:
     width, height = _profile_resolution(profile)
-    mask = np.full((height, width), 255, dtype=np.uint8)
-    if _profile_model(profile) == "opencv_fisheye":
-        radius = float(summary["forward_mask_radius_pixels"])
-        cx, cy = _profile_intrinsic(profile)[:2]
-        yy, xx = np.ogrid[:height, :width]
-        mask = np.where((xx - cx) ** 2 + (yy - cy) ** 2 <= radius**2, 255, 0).astype(np.uint8)
-    Image.fromarray(mask, mode="L").save(path)
+    with Image.open(path) as image:
+        image.load()
+        if image.size != (width, height):
+            raise ValueError(f"mask resolution {image.size} != {(width, height)}")
+        if image.mode != "L":
+            raise ValueError(f"mask must be grayscale mode L, got {image.mode!r}")
+        array = np.asarray(image)
+    if array.ndim != 2 or array.dtype != np.uint8:
+        raise ValueError(f"mask must be 2D uint8 grayscale, got shape={array.shape} dtype={array.dtype}")
+    if not ((array == 0) | (array == 255)).all():
+        raise ValueError("mask must contain only 0 and 255")
 
 
 def _copy_or_link(source: Path, destination: Path, clone: bool) -> None:
@@ -321,7 +322,7 @@ def _write_episode(
         for camera_id, camera in cameras.items():
             mask_relative = Path(scene_name) / "self_mask" / f"{camera_id}.png"
             masks[camera_id] = str(mask_relative)
-            _write_mask(temporary / "self_mask" / f"{camera_id}.png", camera["profile"], camera["rgb_summary"])
+            shutil.copy2(camera["mask_file"], temporary / "self_mask" / f"{camera_id}.png")
 
         frame_index = {}
         for index, frame_id in enumerate(frame_ids):
@@ -400,13 +401,15 @@ def _camera_data(
                 _validate_image(path, width, height, depth=False)
             for path in depth_files:
                 _validate_image(path, width, height, depth=True)
+            mask_file = camera_dir / "valid_pixel_mask.png"
+            _validate_mask(mask_file, profile)
             cameras[camera_id] = {
                 "profile": profile,
                 "calibration": _calibration(profile),
-                "rgb_summary": rgb_summary,
                 "rgb_files": rgb_files,
                 "depth_files": depth_files,
                 "depth_scale": float(depth_summary["depth_scale"]),
+                "mask_file": mask_file,
             }
         except Exception as error:
             raise ValueError(f"camera={camera_id}: {error}") from error
