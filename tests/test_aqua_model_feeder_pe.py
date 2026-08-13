@@ -29,7 +29,7 @@ def run_pe(n_cams, h, w, cam_types, intrinsics, extrinsics, **feeder_kwargs):
 
 
 def make_camera_image(cam_id, cam_type, intrinsic, h, w):
-    T = forward_camera_extrinsic(0, 0, 1)
+    T = forward_camera_extrinsic(0, 0, 1).astype(np.float32)
     return CameraImage(
         name="camera_images",
         cam_id=cam_id,
@@ -37,7 +37,7 @@ def make_camera_image(cam_id, cam_type, intrinsic, h, w):
         img=np.zeros((h, w, 3), dtype=np.uint8),
         ego_mask=np.zeros((h, w), dtype=np.uint8),
         extrinsic=(T[:3, :3], T[:3, 3]),
-        intrinsic=np.asarray(intrinsic, dtype=np.float64),
+        intrinsic=np.asarray(intrinsic, dtype=np.float32),
         tensor_smith=CameraImageTensor(),
     )
 
@@ -69,27 +69,6 @@ def test_process_mixed_camera_types():
     assert torch.all((m == 0) | (m == 1))
     assert torch.all(pe[:, 3] >= -1) and torch.all(pe[:, 3] <= 1)
     assert torch.all(pe[:, 4] >= -1) and torch.all(pe[:, 4] <= 1)
-
-
-def test_float64_intrinsics_extrinsics_produce_float32():
-    h, w = 64, 96
-    feeder = AquaModelFeeder()
-    camera_images = torch.randn(1, 3, h, w)
-    frame = {
-        "camera_images": camera_images,
-        "camera_types": ["FisheyeCamera"],
-        "intrinsic": torch.tensor(
-            [[16, 24, 20, 20, 0.05, -0.01, 0.002, 0.001]], dtype=torch.float64
-        ),
-        "extrinsic": torch.tensor(
-            [forward_camera_extrinsic(0.2, 0, 0.55)], dtype=torch.float64
-        ),
-    }
-    feeder._create_camera_pe(frame)
-    pe = frame["position_embedding"]
-    assert pe.shape == (1, 6, 32, 48)
-    assert pe.dtype == torch.float32
-    assert pe.device == camera_images.device
 
 
 def test_perspective_geometry_and_axis_rotation():

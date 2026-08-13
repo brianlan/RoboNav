@@ -193,11 +193,11 @@ def _profile_extrinsic(profile: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]
     extrinsic = profile.get("extrinsic")
     if not isinstance(extrinsic, dict):
         raise ValueError("camera profile lacks extrinsic")
-    translation = np.asarray(extrinsic.get("translation_body_m"), dtype=np.float64)
-    rpy = np.asarray(extrinsic.get("rotation_rpy_deg"), dtype=np.float64)
+    translation = np.asarray(extrinsic.get("translation_body_m"), dtype=np.float32)
+    rpy = np.asarray(extrinsic.get("rotation_rpy_deg"), dtype=np.float32)
     if translation.shape != (3,) or rpy.shape != (3,) or not np.isfinite([translation, rpy]).all():
         raise ValueError("camera extrinsic must contain finite xyz translation and RPY")
-    rotation = Rotation.from_euler("xyz", rpy, degrees=True).as_matrix()
+    rotation = Rotation.from_euler("xyz", rpy, degrees=True).as_matrix().astype(np.float32)
     return rotation, translation
 
 
@@ -205,7 +205,7 @@ def _calibration(profile: dict[str, Any]) -> dict[str, Any]:
     rotation, translation = _profile_extrinsic(profile)
     return {
         "camera_type": "PerspectiveCamera" if _profile_model(profile) == "pinhole" else "FisheyeCamera",
-        "intrinsic": np.asarray(_profile_intrinsic(profile), dtype=np.float64),
+        "intrinsic": np.asarray(_profile_intrinsic(profile), dtype=np.float32),
         "extrinsic": (rotation, translation),
     }
 
@@ -411,16 +411,16 @@ def _write_frame_images(
 def _ego_pose(trajectory: dict[str, np.ndarray], frame_index: int) -> dict[str, np.ndarray]:
     x, y, yaw = trajectory["pose_world"][frame_index]
     c, s = math.cos(float(yaw)), math.sin(float(yaw))
-    rotation = np.asarray([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+    rotation = np.asarray([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32)
     velocity_world = np.asarray(
-        [*trajectory["velocity_world_mps"][frame_index], 0.0], dtype=np.float64
+        [*trajectory["velocity_world_mps"][frame_index], 0.0], dtype=np.float32
     )
     angular_world = np.asarray(
-        [0.0, 0.0, trajectory["yaw_rate_radps"][frame_index]], dtype=np.float64
+        [0.0, 0.0, trajectory["yaw_rate_radps"][frame_index]], dtype=np.float32
     )
     ego_pose = {
         "rotation": rotation,
-        "translation": np.asarray([x, y, 0.0], dtype=np.float64),
+        "translation": np.asarray([x, y, 0.0], dtype=np.float32),
         "linear_velocity": rotation.T @ velocity_world,
         "angular_velocity": rotation.T @ angular_world,
     }
