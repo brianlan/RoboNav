@@ -1,6 +1,6 @@
 import datetime
 
-experiment_name = "kinogoal_dla_mobileones2_overfit"
+experiment_name = "kinogoal_dla_resnet18_overfit"
 today = datetime.datetime.now().strftime("%m%d")
 
 custom_imports = dict(
@@ -22,27 +22,15 @@ find_unused_parameters = True
 num_gpus = 1
 batch_size = 2
 num_epochs = 2000
-num_transformer_layers = 6
 possible_sequence_lengths = [20]
-point_cloud_range = [-51.2, -51.2, -5.0, 204.8, 51.2, 3.0]
-position_range = [-61.2, -61.2, -10.0, 214.8, 61.2, 10.0]
-depth_num = 256
-
-# Franken Settings
-num_query = 644
-num_propagated = 256
-memory_len = 1024
-
-# DN settings
-noise_corruption_threshold = 0.75
 
 # Virtual Camera settings
 camera_settings = {
     "PINHOLE": dict(
         cam_type="PerspectiveCamera",
-        resolution=(640, 384),
+        resolution=(320, 192),
         euler_angles=[-90, 0, -90],
-        intrinsic=[320.0, 192.0, 448.6, 448.6],
+        intrinsic=[159.5, 95.5, 224.3, 224.3],
     ),
 }
 
@@ -56,8 +44,8 @@ transformables = dict(
         loader=dict(type="SyncCameraImageSetLoader", camera_mapping=camera_mapping),
         tensor_smith=dict(
             type="robonav.CameraImageTensor",
-            means=[123.675, 116.280, 103.530],
-            stds=[58.395, 57.120, 57.375],
+            means=[127.5, 127.5, 127.5],
+            stds=[127.5, 127.5, 127.5],
         ),
     ),
     camera_depths=dict(
@@ -172,7 +160,7 @@ model = dict(
     ),
     backbone=dict(
         type="robonav.TIMMBackbone",
-        model_name="resnet18",
+        model_name="resnet18d.ra4_e3600_r224_in1k",
         features_only=True,
         pretrained=True,
         out_indices=(1, 2, 3, 4),
