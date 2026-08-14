@@ -10,6 +10,7 @@ import re
 import shutil
 import sys
 import tempfile
+import zipfile
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,11 @@ import numpy as np
 from tqdm import tqdm
 from loguru import logger
 from PIL import Image
+import plotly.graph_objects as go
 from scipy.spatial.transform import Rotation
+
+_EGO_AXIS_LENGTH_M = 0.2
+_EGO_VELOCITY_SCALE_S = 1.0
 
 
 def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
@@ -476,6 +481,176 @@ def _write_scene_index(temporary: Path, scene_name: str, frame_index: dict[str, 
         pickle.dump(info, stream, protocol=pickle.HIGHEST_PROTOCOL)
 
 
+def _ego_pose_visualization(
+    temporary: Path, trajectory: dict[str, np.ndarray], frame_ids: list[str]
+) -> go.Figure:
+    """Write a self-contained interactive ego-pose animation into temporary.
+
+    Returns the built figure for inspection.
+    """
+    pose = trajectory["pose_world"]
+    time_s = trajectory["time_s"]
+    frame_count = len(frame_ids)
+
+    def per_frame_traces(frame_index: int) -> list[go.Scatter]:
+        ego = _ego_pose(trajectory, frame_index)
+        r = ego["rotation"]
+        t = ego["translation"]
+        yaw = float(pose[frame_index, 2])
+        origin_x, origin_y = float(t[0]), float(t[1])
+        body_x = (
+            origin_x + _EGO_AXIS_LENGTH_M * float(r[0, 0]),
+            origin_y + _EGO_AXIS_LENGTH_M * float(r[1, 0]),
+        )
+        body_y = (
+            origin_x + _EGO_AXIS_LENGTH_M * float(r[0, 1]),
+            origin_y + _EGO_AXIS_LENGTH_M * float(r[1, 1]),
+        )
+        velocity = r[:2, :2] @ ego["linear_velocity"][:2]
+        velocity_end = (
+            origin_x + _EGO_VELOCITY_SCALE_S * float(velocity[0]),
+            origin_y + _EGO_VELOCITY_SCALE_S * float(velocity[1]),
+        )
+        angular_z = float(ego["angular_velocity"][2])
+        angular_end = (
+            origin_x + _EGO_AXIS_LENGTH_M * math.cos(yaw + angular_z),
+            origin_y + _EGO_AXIS_LENGTH_M * math.sin(yaw + angular_z),
+        )
+        text = (
+            f"frame_id={frame_ids[frame_index]}<br>"
+            f"t={float(time_s[frame_index]):.3f} s<br>"
+            f"translation=({origin_x:.3f}, {origin_y:.3f}, {float(t[2]):.3f}) m<br>"
+            f"yaw={yaw:.3f} rad<br>"
+            f"linear_velocity_body=("
+            f"{float(ego['linear_velocity'][0]):.3f}, {float(ego['linear_velocity'][1]):.3f}) m/s<br>"
+            f"angular_velocity_z={angular_z:.3f} rad/s"
+        )
+
+        def line(x0, y0, x1, y1, color, name) -> go.Scatter:
+            return go.Scatter(
+                x=[x0, x1],
+                y=[y0, y1],
+                mode="lines",
+                line=dict(color=color, width=3),
+                customdata=[text, text],
+                hovertemplate="%{customdata}<extra></extra>",
+                name=name,
+            )
+
+        return [
+            go.Scatter(
+                x=[origin_x],
+                y=[origin_y],
+                mode="markers",
+                marker=dict(color="black", size=7),
+                customdata=[text],
+                hovertemplate="%{customdata}<extra></extra>",
+                name="origin",
+            ),
+            line(origin_x, origin_y, *body_x, "red", "body_x"),
+            line(origin_x, origin_y, *body_y, "green", "body_y"),
+            line(origin_x, origin_y, *velocity_end, "blue", "velocity"),
+            line(origin_x, origin_y, *angular_end, "purple", "angular_axis"),
+        ]
+
+    trajectory_trace = go.Scatter(
+        x=pose[:, 0].tolist(),
+        y=pose[:, 1].tolist(),
+        mode="lines",
+        line=dict(color="grey", width=1.5),
+        hoverinfo="skip",
+        name="trajectory",
+    )
+
+    fig = go.Figure(data=[trajectory_trace, *per_frame_traces(0)])
+    fig.frames = [
+        go.Frame(
+            name=frame_ids[index],
+            data=per_frame_traces(index),
+            traces=[1, 2, 3, 4, 5],
+        )
+        for index in range(frame_count)
+    ]
+
+    xmin, xmax = float(np.min(pose[:, 0])), float(np.max(pose[:, 0]))
+    ymin, ymax = float(np.min(pose[:, 1])), float(np.max(pose[:, 1]))
+    max_speed = float(
+        np.max(np.linalg.norm(trajectory["velocity_world_mps"], axis=1))
+    )
+    margin = max(_EGO_AXIS_LENGTH_M, _EGO_VELOCITY_SCALE_S * max_speed)
+    span = max(xmax - xmin, ymax - ymin) / 2.0 + margin
+    xmid, ymid = (xmin + xmax) / 2.0, (ymin + ymax) / 2.0
+
+    if frame_count > 1:
+        duration_ms = int(round(float(time_s[1] - time_s[0]) * 1000.0))
+    else:
+        duration_ms = 100
+
+    fig.update_layout(
+        title="Ego-pose visualization",
+        xaxis=dict(range=[xmid - span, xmid + span], scaleanchor="y", scaleratio=1),
+        yaxis=dict(range=[ymid - span, ymid + span]),
+        updatemenus=[
+            dict(
+                type="buttons",
+                direction="left",
+                showactive=False,
+                x=0.0,
+                y=1.15,
+                buttons=[
+                    dict(
+                        label="Play",
+                        method="animate",
+                        args=[
+                            None,
+                            dict(
+                                frame=dict(duration=duration_ms, redraw=True),
+                                fromcurrent=True,
+                                transition=dict(duration=0),
+                            ),
+                        ],
+                    ),
+                    dict(
+                        label="Pause",
+                        method="animate",
+                        args=[
+                            [None],
+                            dict(frame=dict(duration=0, redraw=False), mode="immediate"),
+                        ],
+                    ),
+                ],
+            )
+        ],
+        sliders=[
+            dict(
+                active=0,
+                yanchor="top",
+                y=0.0,
+                xanchor="left",
+                x=0.0,
+                steps=[
+                    dict(
+                        method="animate",
+                        args=[
+                            [frame_ids[index]],
+                            dict(mode="immediate", frame=dict(duration=0, redraw=True)),
+                        ],
+                        label=str(index),
+                    )
+                    for index in range(frame_count)
+                ],
+            )
+        ],
+    )
+
+    html = fig.to_html(full_html=True, include_plotlyjs=True, auto_play=False)
+    with zipfile.ZipFile(
+        temporary / "ego_pose_visualization.zip", "w", compression=zipfile.ZIP_DEFLATED
+    ) as archive:
+        archive.writestr("ego_pose_visualization.html", html)
+    return fig
+
+
 def _write_episode(
     source_scene_id: str,
     episode: int,
@@ -505,6 +680,7 @@ def _write_episode(
             for index, frame_id in enumerate(frame_ids)
         }
         _write_scene_index(temporary, scene_name, frame_index)
+        _ego_pose_visualization(temporary, trajectory, frame_ids)
         temporary.rename(output_root / scene_name)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
