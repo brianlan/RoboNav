@@ -3,6 +3,7 @@ import torch
 import cv2
 from prefusion.dataset.transform import CameraImage, CameraImageSet
 
+from robonav.aqua.model.aqua_resnet18d import AquaResNet18D
 from robonav.aqua.model_feeder.aqua_model_feeder import AquaModelFeeder
 from robonav.aqua.tensor_smith.camera_tensor_smith import CameraImageTensor
 
@@ -151,7 +152,7 @@ def test_unit_ray_norms():
     pe = run_pe(n_cams, h, w, cam_types, intrinsics, extrinsics)
 
     norms = torch.linalg.vector_norm(pe[:, :3], dim=1)
-    assert torch.all((norms - 1).abs() < 1e-4)
+    assert torch.all((norms - 1).abs() < 1e-6)
 
 
 def test_ground_valid_invalid_and_exact_zero_q():
@@ -268,3 +269,19 @@ def test_odd_image_ceil_output():
         [forward_camera_extrinsic(0, 0, 1)],
     )
     assert pe.shape == (1, 6, 33, 32)
+
+
+def test_pe_spatial_shape_matches_conv1_odd():
+    h, w = 33, 49
+    model = AquaResNet18D()
+    model.eval()
+    conv1_out = model.conv1(torch.randn(1, 3, h, w))
+    pe = run_pe(
+        1,
+        h,
+        w,
+        ["PerspectiveCamera"],
+        [[16, 16, 8, 8]],
+        [forward_camera_extrinsic(0, 0, 1)],
+    )
+    assert pe.shape[2:] == conv1_out.shape[2:]

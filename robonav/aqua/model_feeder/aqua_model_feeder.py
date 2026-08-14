@@ -106,12 +106,12 @@ class AquaModelFeeder(BaseModelFeeder):
         cy = intr[:, 1] / s
 
         v, u = torch.meshgrid(
-            torch.arange(h_pe, device=device),
-            torch.arange(w_pe, device=device),
+            torch.arange(h_pe, device=device, dtype=torch.float32),
+            torch.arange(w_pe, device=device, dtype=torch.float32),
             indexing="ij",
         )
-        u = u.to(torch.float32)[None]  # [1, H_pe, W_pe]
-        v = v.to(torch.float32)[None]
+        u = u[None]  # [1, H_pe, W_pe]
+        v = v[None]
 
         x_d = (u - cx[:, None, None]) / fx[:, None, None]
         y_d = (v - cy[:, None, None]) / fy[:, None, None]
@@ -119,58 +119,66 @@ class AquaModelFeeder(BaseModelFeeder):
         is_fisheye = torch.tensor(
             [ct == "FisheyeCamera" for ct in cam_types], device=device
         )
+        is_persp = ~is_fisheye
+
+        ray_c = torch.empty(
+            (x_d.shape[0], h_pe, w_pe, 3), device=device, dtype=x_d.dtype
+        )
 
         # Perspective: normalized pinhole ray [x, y, 1]
-        ray_persp = torch.stack([x_d, y_d, torch.ones_like(x_d)], dim=-1)
-        ray_persp = ray_persp / torch.linalg.vector_norm(
-            ray_persp, dim=-1, keepdim=True
-        )
+        if is_persp.any():
+            x = x_d[is_persp]
+            y = y_d[is_persp]
+            ray_persp = torch.stack([x, y, torch.ones_like(x)], dim=-1)
+            ray_persp = ray_persp / torch.linalg.vector_norm(
+                ray_persp, dim=-1, keepdim=True
+            )
+            ray_c[is_persp] = ray_persp
 
         # Fisheye: invert OpenCV theta polynomial, then build a spherical unit ray
-        dist = torch.zeros((x_d.shape[0], 4), device=device, dtype=x_d.dtype)
         if is_fisheye.any():
-            dist[is_fisheye] = intr[is_fisheye][:, 4:8]
-        k1 = dist[:, 0][:, None, None]
-        k2 = dist[:, 1][:, None, None]
-        k3 = dist[:, 2][:, None, None]
-        k4 = dist[:, 3][:, None, None]
+            x = x_d[is_fisheye]
+            y = y_d[is_fisheye]
+            k = intr[is_fisheye][:, 4:8]
+            k1 = k[:, 0][:, None, None]
+            k2 = k[:, 1][:, None, None]
+            k3 = k[:, 2][:, None, None]
+            k4 = k[:, 3][:, None, None]
 
-        theta_d = torch.sqrt(x_d**2 + y_d**2)
-        theta = theta_d.clone()
-        for _ in range(8):
-            theta2 = theta**2
-            theta4 = theta2**2
-            theta6 = theta4 * theta2
-            theta8 = theta4**2
-            f = (
-                theta * (1.0 + k1 * theta2 + k2 * theta4 + k3 * theta6 + k4 * theta8)
-                - theta_d
+            theta_d = torch.sqrt(x**2 + y**2)
+            theta = theta_d.clone()
+            for _ in range(8):
+                theta2 = theta**2
+                theta4 = theta2**2
+                theta6 = theta4 * theta2
+                theta8 = theta4**2
+                f = (
+                    theta
+                    * (1.0 + k1 * theta2 + k2 * theta4 + k3 * theta6 + k4 * theta8)
+                    - theta_d
+                )
+                df = (
+                    1.0
+                    + 3.0 * k1 * theta2
+                    + 5.0 * k2 * theta4
+                    + 7.0 * k3 * theta6
+                    + 9.0 * k4 * theta8
+                )
+                theta = theta - f / df
+
+            eps_center = 1e-8
+            non_center = theta_d > eps_center
+            safe_theta_d = torch.where(non_center, theta_d, torch.ones_like(theta_d))
+            radial_scale = torch.sin(theta) / safe_theta_d
+            ray_fish = torch.stack(
+                [
+                    x * radial_scale,
+                    y * radial_scale,
+                    torch.where(non_center, torch.cos(theta), torch.ones_like(theta)),
+                ],
+                dim=-1,
             )
-            df = (
-                1.0
-                + 3.0 * k1 * theta2
-                + 5.0 * k2 * theta4
-                + 7.0 * k3 * theta6
-                + 9.0 * k4 * theta8
-            )
-            theta = theta - f / df
-
-        eps_center = 1e-8
-        non_center = theta_d > eps_center
-        radial_scale = torch.where(
-            non_center, torch.sin(theta) / theta_d, torch.zeros_like(theta_d)
-        )
-        ray_fish = torch.stack(
-            [
-                x_d * radial_scale,
-                y_d * radial_scale,
-                torch.where(non_center, torch.cos(theta), torch.ones_like(theta)),
-            ],
-            dim=-1,
-        )
-        ray_fish = ray_fish / torch.linalg.vector_norm(ray_fish, dim=-1, keepdim=True)
-
-        ray_c = torch.where(is_fisheye[:, None, None, None], ray_fish, ray_persp)
+            ray_c[is_fisheye] = ray_fish
 
         # Camera frame -> body frame: rotate direction by R only, origin is t
         R = extr[:, :3, :3]
