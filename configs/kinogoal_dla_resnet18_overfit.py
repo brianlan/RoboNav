@@ -161,7 +161,7 @@ model = dict(
         device="cuda",
     ),
     backbone=dict(
-        type="robonav.AquaResNet18",
+        type="robonav.AquaResNet18D",
         features_only=True,
         pretrained=True,
         out_indices=(1, 2, 3, 4),

@@ -1,2 +1,2 @@
 from .aqua import *
-from .aqua_resnet18 import *
+from .aqua_resnet18d import *
