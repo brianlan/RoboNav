@@ -1,4 +1,5 @@
 import torch
+from collections import OrderedDict
 
 from prefusion import BaseModel
 
@@ -32,5 +33,10 @@ class AquaNet(BaseModel):
         B = len(camera_images)
         camera_images = torch.row_stack(camera_images)
         pe = torch.row_stack(position_embedding)
-        goal = torch.row_stack(goals)
-        f1, f2, f3, f4, self.hidden = self.backbone(camera_images, pe, goal, self.state, self.hidden)
+        # goal = torch.row_stack(goals)
+        f1, f2, f3, f4, self.hidden = self.backbone(camera_images, pe, None, self.state, self.hidden)
+        feats = self.neck(OrderedDict(zip(["0", "1", "2", "3"], [f1, f2, f3, f4])))
+        if mode == "loss":
+            # TODO: dummy loss, replace with real head
+            return dict(loss=sum(f.mean() for f in feats.values()))
+        return feats
