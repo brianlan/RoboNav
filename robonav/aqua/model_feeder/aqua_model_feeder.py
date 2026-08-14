@@ -94,6 +94,9 @@ class AquaModelFeeder(BaseModelFeeder):
         intr = frame_out_dict["intrinsic"].to(device=device, dtype=torch.float32)
         extr = frame_out_dict["extrinsic"].to(device=device, dtype=torch.float32)
         cam_types = frame_out_dict["camera_types"]
+        unrecognized = sorted(set(cam_types) - {"PerspectiveCamera", "FisheyeCamera"})
+        if unrecognized:
+            raise ValueError(f"Unrecognized camera type(s): {unrecognized}")
         _, _, img_h, img_w = camera_images.shape
 
         s = self.pe_downsample_factor

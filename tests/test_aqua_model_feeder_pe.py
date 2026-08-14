@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import torch
 import cv2
 from prefusion.dataset.transform import CameraImage, CameraImageSet
@@ -70,6 +71,18 @@ def test_process_mixed_camera_types():
     assert torch.all((m == 0) | (m == 1))
     assert torch.all(pe[:, 3] >= -1) and torch.all(pe[:, 3] <= 1)
     assert torch.all(pe[:, 4] >= -1) and torch.all(pe[:, 4] <= 1)
+
+
+def test_unrecognized_camera_type_raises():
+    with pytest.raises(ValueError, match="Unrecognized camera type"):
+        run_pe(
+            1,
+            64,
+            64,
+            ["UnknownCamera"],
+            [[16, 16, 8, 8]],
+            [forward_camera_extrinsic(0, 0, 1)],
+        )
 
 
 def test_perspective_geometry_and_axis_rotation():
