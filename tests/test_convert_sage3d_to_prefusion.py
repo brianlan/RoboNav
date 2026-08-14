@@ -69,3 +69,48 @@ def test_ego_pose_arrays_are_float32():
     }
     for name, value in ego_pose.items():
         assert value.dtype == np.float32, name
+
+
+def test_goal_is_relative_to_current_body_frame():
+    converter = _converter()
+    trajectory = {
+        "pose_world": np.array([[1.0, 2.0, 0.3], [3.0, 5.0, 0.9]]),
+        "velocity_world_mps": np.array([[1.0, 2.0], [3.0, 4.0]]),
+        "yaw_rate_radps": np.array([0.1, 0.4]),
+    }
+    ego = converter._ego_pose(trajectory, 0)
+    terminal = converter._ego_pose(trajectory, 1)
+    goal = converter._goal(ego, terminal)
+    assert set(goal) == {
+        "rotation",
+        "translation",
+        "linear_velocity",
+        "angular_velocity",
+    }
+    for name, value in goal.items():
+        assert value.dtype == np.float32, name
+    assert goal["rotation"].shape == (3, 3)
+    assert goal["translation"].shape == (3,)
+    assert goal["linear_velocity"].shape == (3,)
+    assert goal["angular_velocity"].shape == (3,)
+    assert np.allclose(
+        ego["rotation"] @ goal["translation"],
+        terminal["translation"] - ego["translation"],
+        atol=1e-6,
+    )
+    assert np.allclose(ego["rotation"] @ goal["rotation"], terminal["rotation"], atol=1e-6)
+    assert np.allclose(
+        ego["rotation"] @ goal["linear_velocity"], [3.0, 4.0, 0.0], atol=1e-6
+    )
+    assert np.allclose(
+        ego["rotation"] @ goal["angular_velocity"], [0.0, 0.0, 0.4], atol=1e-6
+    )
+    terminal_goal = converter._goal(terminal, terminal)
+    assert np.allclose(terminal_goal["translation"], 0.0, atol=1e-6)
+    assert np.allclose(terminal_goal["rotation"], np.eye(3), atol=1e-6)
+    assert np.allclose(
+        terminal_goal["linear_velocity"], terminal["linear_velocity"], atol=1e-6
+    )
+    assert np.allclose(
+        terminal_goal["angular_velocity"], terminal["angular_velocity"], atol=1e-6
+    )

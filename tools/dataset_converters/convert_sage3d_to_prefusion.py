@@ -429,12 +429,26 @@ def _ego_pose(trajectory: dict[str, np.ndarray], frame_index: int) -> dict[str, 
     return ego_pose
 
 
+def _goal(
+    ego_pose: dict[str, np.ndarray], terminal_ego_pose: dict[str, np.ndarray]
+) -> dict[str, np.ndarray]:
+    relative_rotation = ego_pose["rotation"].T @ terminal_ego_pose["rotation"]
+    return {
+        "rotation": relative_rotation,
+        "translation": ego_pose["rotation"].T
+        @ (terminal_ego_pose["translation"] - ego_pose["translation"]),
+        "linear_velocity": relative_rotation @ terminal_ego_pose["linear_velocity"],
+        "angular_velocity": relative_rotation @ terminal_ego_pose["angular_velocity"],
+    }
+
+
 def _write_frame(
     temporary: Path,
     scene_name: str,
     frame_index: int,
     frame_id: str,
     trajectory: dict[str, np.ndarray],
+    terminal_ego_pose: dict[str, np.ndarray],
     cameras: dict[str, dict[str, Any]],
     scene_info: dict[str, Any],
     clone_images: bool,
@@ -442,10 +456,12 @@ def _write_frame(
     camera_images, depth_images = _write_frame_images(
         temporary, scene_name, frame_id, frame_index, cameras, clone_images
     )
+    ego_pose = _ego_pose(trajectory, frame_index)
     frame_data = {
         "camera_image": camera_images,
         "camera_image_depth": depth_images,
-        "ego_pose": _ego_pose(trajectory, frame_index),
+        "ego_pose": ego_pose,
+        "goal": _goal(ego_pose, terminal_ego_pose),
         "scene_info": scene_info,
     }
     frame_name = f"{frame_id}.pkl"
@@ -473,6 +489,7 @@ def _write_episode(
     temporary = Path(tempfile.mkdtemp(prefix=f".{scene_name}.", dir=output_root))
     try:
         scene_info = _initialize_scene(temporary, scene_name, cameras)
+        terminal_ego_pose = _ego_pose(trajectory, len(frame_ids) - 1)
         frame_index = {
             frame_id: _write_frame(
                 temporary,
@@ -480,6 +497,7 @@ def _write_episode(
                 index,
                 frame_id,
                 trajectory,
+                terminal_ego_pose,
                 cameras,
                 scene_info,
                 clone_images,
