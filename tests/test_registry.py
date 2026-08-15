@@ -1,4 +1,11 @@
-from prefusion.registry import METRICS, MODELS, MODEL_FEEDERS, TENSOR_SMITHS
+from prefusion.registry import (
+    METRICS,
+    MODELS,
+    MODEL_FEEDERS,
+    TENSOR_SMITHS,
+    TRANSFORMABLES,
+    TRANSFORMABLE_LOADERS,
+)
 
 import robonav  # noqa: F401
 
@@ -9,6 +16,9 @@ def test_robonav_registrations():
         (MODELS, "FrameBatchMerger", "robonav.common.model.data_preprocessor"),
         (MODEL_FEEDERS, "AquaModelFeeder", "robonav.aqua.model_feeder.aqua_model_feeder"),
         (TENSOR_SMITHS, "CameraImageTensor", "robonav.aqua.tensor_smith.camera_tensor_smith"),
+        (TENSOR_SMITHS, "GoalTensorSmith", "robonav.aqua.tensor_smith.goal_tensor_smith"),
+        (TRANSFORMABLES, "Goal", "robonav.aqua.transformable.goal"),
+        (TRANSFORMABLE_LOADERS, "GoalLoader", "robonav.aqua.transformable_loader.goal_loader"),
         (METRICS, "DummyAccuracyMetric", "robonav.common.metric"),
     )
 

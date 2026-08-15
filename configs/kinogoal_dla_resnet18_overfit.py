@@ -43,7 +43,7 @@ transformables = dict(
         type="CameraImageSet",
         loader=dict(type="SyncCameraImageSetLoader", camera_mapping=camera_mapping),
         tensor_smith=dict(
-            type="robonav.CameraImageTensor",
+            type="CameraImageTensor",
             means=[127.5, 127.5, 127.5],
             stds=[127.5, 127.5, 127.5],
         ),
@@ -54,6 +54,11 @@ transformables = dict(
         tensor_smith=dict(type="robonav.CameraDepthTensor", max_depth=5),
     ),
     ego_poses=dict(type="EgoPoseSet"),
+    goal=dict(
+        type="robonav.Goal",
+        loader=dict(type="robonav.GoalLoader"),
+        tensor_smith=dict(type="robonav.GoalTensorSmith"),
+    ),
 )
 
 model_feeder = dict(

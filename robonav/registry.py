@@ -4,6 +4,8 @@ from prefusion.registry import (
     MODELS as PREFUSION_MODELS,
     MODEL_FEEDERS as PREFUSION_MODEL_FEEDERS,
     TENSOR_SMITHS as PREFUSION_TENSOR_SMITHS,
+    TRANSFORMABLES as PREFUSION_TRANSFORMABLES,
+    TRANSFORMABLE_LOADERS as PREFUSION_TRANSFORMABLE_LOADERS,
 )
 
 MODELS = Registry("model", parent=PREFUSION_MODELS, scope="robonav")
@@ -14,5 +16,18 @@ TENSOR_SMITHS = Registry(
     "tensor_smith", parent=PREFUSION_TENSOR_SMITHS, scope="robonav"
 )
 METRICS = Registry("metric", parent=PREFUSION_METRICS, scope="robonav")
+TRANSFORMABLES = Registry(
+    "transformable", parent=PREFUSION_TRANSFORMABLES, scope="robonav"
+)
+TRANSFORMABLE_LOADERS = Registry(
+    "transformable_loader", parent=PREFUSION_TRANSFORMABLE_LOADERS, scope="robonav"
+)
 
-__all__ = ["MODELS", "MODEL_FEEDERS", "TENSOR_SMITHS", "METRICS"]
+__all__ = [
+    "MODELS",
+    "MODEL_FEEDERS",
+    "TENSOR_SMITHS",
+    "METRICS",
+    "TRANSFORMABLES",
+    "TRANSFORMABLE_LOADERS",
+]

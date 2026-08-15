@@ -2,6 +2,7 @@ import torch
 from prefusion.dataset.model_feeder import BaseModelFeeder
 from prefusion.dataset.transform import CameraImageSet, CameraDepthSet, EgoPoseSet
 
+from robonav.aqua.transformable import Goal
 from robonav.registry import MODEL_FEEDERS
 from robonav.common.util import rt2mat
 
@@ -17,12 +18,14 @@ class AquaModelFeeder(BaseModelFeeder):
         debug=False,
         pe_downsample_factor=2,
         pe_range=(-5, -5, 5, 5),
+        goal_replace_prob=0.0,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.debug = debug
         self.pe_downsample_factor = pe_downsample_factor
         self.pe_range = torch.tensor(pe_range)
+        self.goal_replace_prob=goal_replace_prob
 
     def process(self, frame_batch: list) -> dict | list:
         processed_batch: list[dict] = []
@@ -78,7 +81,10 @@ class AquaModelFeeder(BaseModelFeeder):
                 out["camera_depths"] = img_tensor
                 continue
             if isinstance(trsfmb, EgoPoseSet):
-                out["ego_poses"] = (frame["transformables"].get("ego_poses"),)
+                out["ego_poses"] = frame["transformables"].get("ego_poses")
+                continue
+            if isinstance(trsfmb, Goal):
+                out["goal"] = frame["transformables"].get("goal")
                 continue
         return out
 

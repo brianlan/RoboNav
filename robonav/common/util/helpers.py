@@ -19,6 +19,10 @@ def ensured_path(input, ensure_parent=False):
 parent_ensured_path = partial(ensured_path, ensure_parent=True)
 
 
+def points3d_to_homo(points3d: np.ndarray) -> np.ndarray:
+    return np.concatenate((points3d, np.ones(len(points3d))[:, None]), axis=1)
+
+
 def rt2mat(
     rotation: np.ndarray, translation: np.ndarray, as_homo: bool = False
 ) -> np.ndarray:
