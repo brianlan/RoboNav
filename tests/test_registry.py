@@ -15,10 +15,25 @@ def test_robonav_registrations():
         (MODELS, "AquaNet", "robonav.aqua.model.aqua"),
         (MODELS, "FrameBatchMerger", "robonav.common.model.data_preprocessor"),
         (MODEL_FEEDERS, "AquaModelFeeder", "robonav.aqua.model_feeder.aqua_model_feeder"),
-        (TENSOR_SMITHS, "CameraImageTensor", "robonav.aqua.tensor_smith.camera_tensor_smith"),
+        (TENSOR_SMITHS, "CameraDepthTensor", "robonav.aqua.tensor_smith.camera_tensor_smith"),
         (TENSOR_SMITHS, "GoalTensorSmith", "robonav.aqua.tensor_smith.goal_tensor_smith"),
+        (
+            TENSOR_SMITHS,
+            "FutureTrajectoryTensorSmith",
+            "robonav.aqua.tensor_smith.future_trajectory_tensor_smith",
+        ),
         (TRANSFORMABLES, "Goal", "robonav.aqua.transformable.goal"),
+        (
+            TRANSFORMABLES,
+            "FutureTrajectory",
+            "robonav.aqua.transformable.future_trajectory",
+        ),
         (TRANSFORMABLE_LOADERS, "GoalLoader", "robonav.aqua.transformable_loader.goal_loader"),
+        (
+            TRANSFORMABLE_LOADERS,
+            "FutureTrajectoryLoader",
+            "robonav.aqua.transformable_loader.future_trajectory_loader",
+        ),
         (METRICS, "DummyAccuracyMetric", "robonav.common.metric"),
     )
 

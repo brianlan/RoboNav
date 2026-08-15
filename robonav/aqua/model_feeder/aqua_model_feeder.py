@@ -2,7 +2,7 @@ import torch
 from prefusion.dataset.model_feeder import BaseModelFeeder
 from prefusion.dataset.transform import CameraImageSet, CameraDepthSet, EgoPoseSet
 
-from robonav.aqua.transformable import Goal
+from robonav.aqua.transformable import FutureTrajectory, Goal
 from robonav.registry import MODEL_FEEDERS
 from robonav.common.util import rt2mat
 
@@ -85,6 +85,9 @@ class AquaModelFeeder(BaseModelFeeder):
                 continue
             if isinstance(trsfmb, Goal):
                 out["goal"] = frame["transformables"].get("goal")
+                continue
+            if isinstance(trsfmb, FutureTrajectory):
+                out["future_trajectory"] = trsfmb.tensor  # dict of tensors, moved to device by FrameBatchMerger
                 continue
         return out
 

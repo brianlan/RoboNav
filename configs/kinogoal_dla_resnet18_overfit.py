@@ -59,6 +59,11 @@ transformables = dict(
         loader=dict(type="robonav.GoalLoader"),
         tensor_smith=dict(type="robonav.GoalTensorSmith"),
     ),
+    future_trajectory=dict(
+        type="robonav.FutureTrajectory",
+        loader=dict(type="robonav.FutureTrajectoryLoader"),
+        tensor_smith=dict(type="robonav.FutureTrajectoryTensorSmith"),
+    ),
 )
 
 model_feeder = dict(

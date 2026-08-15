@@ -6,7 +6,7 @@ from prefusion.dataset.transform import CameraImage, CameraImageSet
 
 from robonav.aqua.model.aqua_resnet18d import AquaResNet18D
 from robonav.aqua.model_feeder.aqua_model_feeder import AquaModelFeeder
-from robonav.aqua.tensor_smith.camera_tensor_smith import CameraImageTensor
+from prefusion.dataset.tensor_smith import CameraImageTensor
 
 
 def forward_camera_extrinsic(forward, left, up):

@@ -27,6 +27,7 @@ class AquaNet(BaseModel):
         position_embedding=None,
         ego_poses=None,
         goal=None,
+        future_trajectory=None,
         mode="loss",
         **kwargs,
     ):
