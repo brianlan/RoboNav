@@ -19,11 +19,19 @@ import numpy as np
 from tqdm import tqdm
 from loguru import logger
 from PIL import Image
+import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from scipy.spatial.transform import Rotation
 
 _EGO_AXIS_LENGTH_M = 0.2
 _EGO_VELOCITY_SCALE_S = 1.0
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
 
 
 def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
@@ -32,6 +40,9 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-scene-root", type=Path, required=True)
     parser.add_argument("--scene-ids", nargs="*")
     parser.add_argument("--clone-camera-images", action="store_true", default=False)
+    parser.add_argument("--num-future-trajectory-steps", type=_positive_int, default=20)
+    parser.add_argument("--visualize-future-trajectory", action="store_true", default=False)
+    parser.add_argument("--visualize-ego-pose", action="store_true", default=False)
     return parser.parse_args(argv)
 
 
@@ -49,7 +60,12 @@ def main(argv: list[str] | None = None) -> int:
             logger.error("no source scenes selected")
             return 2
         succeeded, skipped, existing, reasons = _convert_scenes(
-            scene_dirs, output_root, args.clone_camera_images
+            scene_dirs,
+            output_root,
+            args.clone_camera_images,
+            args.num_future_trajectory_steps,
+            args.visualize_future_trajectory,
+            args.visualize_ego_pose,
         )
     except Exception as error:
         logger.error("fatal conversion error: {}", error)
@@ -84,7 +100,12 @@ def _select_scene_dirs(input_root: Path, scene_ids: list[str] | None) -> list[Pa
 
 
 def _convert_scenes(
-    scene_dirs: list[Path], output_root: Path, clone_images: bool
+    scene_dirs: list[Path],
+    output_root: Path,
+    clone_images: bool,
+    num_future_trajectory_steps: int,
+    visualize_future_trajectory: bool,
+    visualize_ego_pose: bool,
 ) -> tuple[int, int, int, Counter[str]]:
     reasons: Counter[str] = Counter()
     succeeded = skipped = existing = 0
@@ -95,7 +116,13 @@ def _convert_scenes(
             skipped += 1
             continue
         scene_succeeded, scene_skipped, scene_existing = _process_scene(
-            scene_dir, output_root, clone_images, reasons
+            scene_dir,
+            output_root,
+            clone_images,
+            reasons,
+            num_future_trajectory_steps,
+            visualize_future_trajectory,
+            visualize_ego_pose,
         )
         succeeded += scene_succeeded
         skipped += scene_skipped
@@ -447,6 +474,24 @@ def _goal(
     }
 
 
+def _future_trajectory(
+    trajectory: dict[str, np.ndarray],
+    frame_index: int,
+    num_future_trajectory_steps: int,
+) -> dict[str, np.ndarray]:
+    terminal_index = len(trajectory["pose_world"]) - 1
+    ego_pose = _ego_pose(trajectory, frame_index)
+    trajectory_steps = [
+        _goal(ego_pose, _ego_pose(trajectory, min(frame_index + offset, terminal_index)))
+        for offset in range(1, num_future_trajectory_steps + 1)
+    ]
+    fields = ("rotation", "translation", "linear_velocity", "angular_velocity")
+    return {
+        field: np.stack([step[field] for step in trajectory_steps], axis=0)
+        for field in fields
+    }
+
+
 def _write_frame(
     temporary: Path,
     scene_name: str,
@@ -457,6 +502,7 @@ def _write_frame(
     cameras: dict[str, dict[str, Any]],
     scene_info: dict[str, Any],
     clone_images: bool,
+    num_future_trajectory_steps: int,
 ) -> str:
     camera_images, depth_images = _write_frame_images(
         temporary, scene_name, frame_id, frame_index, cameras, clone_images
@@ -467,6 +513,9 @@ def _write_frame(
         "camera_image_depth": depth_images,
         "ego_pose": ego_pose,
         "goal": _goal(ego_pose, terminal_ego_pose),
+        "future_trajectory": _future_trajectory(
+            trajectory, frame_index, num_future_trajectory_steps
+        ),
         "scene_info": scene_info,
     }
     frame_name = f"{frame_id}.pkl"
@@ -479,6 +528,129 @@ def _write_scene_index(temporary: Path, scene_name: str, frame_index: dict[str, 
     info = {scene_name: {"scene_info": {}, "frame_info": frame_index}}
     with (temporary / "info.pkl").open("wb") as stream:
         pickle.dump(info, stream, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def _future_trajectory_figure(
+    ego_pose: dict[str, np.ndarray],
+    goal: dict[str, np.ndarray],
+    future_trajectory: dict[str, np.ndarray],
+) -> plt.Figure:
+    """Build a 2D top-down body-frame figure of ego, goal, and future trajectory."""
+    axis_length = _EGO_AXIS_LENGTH_M
+    velocity_scale = _EGO_VELOCITY_SCALE_S
+    xs: list[float] = [0.0]
+    ys: list[float] = [0.0]
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    def segment(origin, vector, *args, **kwargs):
+        start = np.asarray(origin, dtype=np.float64)[:2]
+        end = start + np.asarray(vector, dtype=np.float64)[:2]
+        ax.plot([start[0], end[0]], [start[1], end[1]], *args, **kwargs)
+        xs.extend([start[0], end[0]])
+        ys.extend([start[1], end[1]])
+
+    segment((0.0, 0.0), (axis_length, 0.0), color="red", linewidth=2, label="ego_x")
+    segment((0.0, 0.0), (0.0, axis_length), color="green", linewidth=2, label="ego_y")
+    segment(
+        (0.0, 0.0),
+        velocity_scale * ego_pose["linear_velocity"][:2],
+        color="blue",
+        linewidth=2,
+        label="ego_velocity",
+    )
+    omega = float(ego_pose["angular_velocity"][2])
+    segment(
+        (0.0, 0.0),
+        axis_length * np.array([math.cos(omega), math.sin(omega)]),
+        color="purple",
+        linewidth=2,
+        label="ego_angular",
+    )
+
+    goal_position = goal["translation"][:2]
+    xs.append(goal_position[0])
+    ys.append(goal_position[1])
+    ax.plot(
+        [goal_position[0]],
+        [goal_position[1]],
+        marker="*",
+        color="magenta",
+        markersize=14,
+        label="goal",
+    )
+    segment(
+        goal_position,
+        axis_length * goal["rotation"][:2, 0],
+        color="magenta",
+        linewidth=2,
+        label="goal_heading",
+    )
+
+    for index, (translation, rotation, linear, angular) in enumerate(
+        zip(
+            future_trajectory["translation"],
+            future_trajectory["rotation"],
+            future_trajectory["linear_velocity"],
+            future_trajectory["angular_velocity"],
+        )
+    ):
+        position = translation[:2]
+        xs.append(position[0])
+        ys.append(position[1])
+        ax.plot([position[0]], [position[1]], marker=".", color="grey", alpha=0.2)
+        future_omega = float(angular[2])
+        angular_direction = rotation[:2, :2] @ np.array(
+            [math.cos(future_omega), math.sin(future_omega)]
+        )
+        for label, vector, color in (
+            ("future_x", axis_length * rotation[:2, 0], "red"),
+            ("future_y", axis_length * rotation[:2, 1], "green"),
+            ("future_velocity", velocity_scale * linear[:2], "blue"),
+            ("future_angular", axis_length * angular_direction, "purple"),
+        ):
+            segment(
+                position,
+                vector,
+                color=color,
+                linewidth=0.5,
+                alpha=0.2,
+                label=label if index == 0 else "_nolegend_",
+            )
+
+    margin = max(max(xs) - min(xs), max(ys) - min(ys)) * 0.1 + axis_length
+    ax.set_xlim(min(xs) - margin, max(xs) + margin)
+    ax.set_ylim(min(ys) - margin, max(ys) + margin)
+    ax.set_aspect("equal")
+    ax.grid(True, alpha=0.3)
+    ax.set_xlabel("X forward [m]")
+    ax.set_ylabel("Y left [m]")
+    ax.set_title("future trajectory")
+    ax.legend(fontsize=8, loc="upper left", bbox_to_anchor=(1.02, 1.0))
+    fig.tight_layout()
+    return fig
+
+
+def _write_future_trajectory_visualizations(
+    temporary: Path,
+    trajectory: dict[str, np.ndarray],
+    frame_ids: list[str],
+    num_future_trajectory_steps: int,
+) -> None:
+    (temporary / "future_trajectory_vis").mkdir()
+    terminal_ego_pose = _ego_pose(trajectory, len(frame_ids) - 1)
+    for frame_index, frame_id in enumerate(frame_ids):
+        ego_pose = _ego_pose(trajectory, frame_index)
+        future_trajectory = _future_trajectory(
+            trajectory, frame_index, num_future_trajectory_steps
+        )
+        fig = _future_trajectory_figure(
+            ego_pose, _goal(ego_pose, terminal_ego_pose), future_trajectory
+        )
+        try:
+            fig.savefig(temporary / "future_trajectory_vis" / f"{frame_id}.png", dpi=150)
+        finally:
+            plt.close(fig)
 
 
 def _ego_pose_visualization(
@@ -659,6 +831,9 @@ def _write_episode(
     frame_ids: list[str],
     cameras: dict[str, dict[str, Any]],
     clone_images: bool,
+    num_future_trajectory_steps: int,
+    visualize_future_trajectory: bool,
+    visualize_ego_pose: bool,
 ) -> str:
     scene_name = f"sage3d-{source_scene_id}-{episode:06d}"
     temporary = Path(tempfile.mkdtemp(prefix=f".{scene_name}.", dir=output_root))
@@ -676,11 +851,17 @@ def _write_episode(
                 cameras,
                 scene_info,
                 clone_images,
+                num_future_trajectory_steps,
             )
             for index, frame_id in enumerate(frame_ids)
         }
         _write_scene_index(temporary, scene_name, frame_index)
-        _ego_pose_visualization(temporary, trajectory, frame_ids)
+        if visualize_ego_pose:
+            _ego_pose_visualization(temporary, trajectory, frame_ids)
+        if visualize_future_trajectory:
+            _write_future_trajectory_visualizations(
+                temporary, trajectory, frame_ids, num_future_trajectory_steps
+            )
         temporary.rename(output_root / scene_name)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
@@ -801,6 +982,9 @@ def _convert_episode(
     control_dt: float,
     output_root: Path,
     clone_images: bool,
+    num_future_trajectory_steps: int,
+    visualize_future_trajectory: bool,
+    visualize_ego_pose: bool,
 ) -> bool:
     source_scene_id = scene_dir.name
     expected_name, t_output = _validate_episode_record(record, episode, validated)
@@ -822,6 +1006,9 @@ def _convert_episode(
         frame_ids,
         cameras,
         clone_images,
+        num_future_trajectory_steps,
+        visualize_future_trajectory,
+        visualize_ego_pose,
     )
     return True
 
@@ -831,6 +1018,9 @@ def _process_scene(
     output_root: Path,
     clone_images: bool,
     reasons: Counter[str],
+    num_future_trajectory_steps: int,
+    visualize_future_trajectory: bool,
+    visualize_ego_pose: bool,
 ) -> tuple[int, int, int]:
     source_scene_id = scene_dir.name
     try:
@@ -854,6 +1044,9 @@ def _process_scene(
                 control_dt,
                 output_root,
                 clone_images,
+                num_future_trajectory_steps,
+                visualize_future_trajectory,
+                visualize_ego_pose,
             )
             if converted:
                 succeeded += 1

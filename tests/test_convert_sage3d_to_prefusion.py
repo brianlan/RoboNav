@@ -1,8 +1,12 @@
 import importlib.util
+import pickle
 import zipfile
 from pathlib import Path
 
 import numpy as np
+import pytest
+import matplotlib.pyplot as plt
+from PIL import Image
 
 _CONVERTER_PATH = (
     Path(__file__).resolve().parents[1]
@@ -179,3 +183,205 @@ def test_ego_pose_visualization_geometry(tmp_path):
     for fid in frame_ids:
         assert fid in html
     assert info.compress_size < info.file_size
+
+
+def _trajectory():
+    return {
+        "pose_world": np.array(
+            [[0.0, 0.0, 0.3], [3.0, 5.0, 0.9], [1.0, -1.0, -0.4], [2.0, 2.0, 0.0]]
+        ),
+        "velocity_world_mps": np.array(
+            [[1.0, 2.0], [3.0, 4.0], [0.5, -0.5], [1.0, 0.0]]
+        ),
+        "yaw_rate_radps": np.array([0.1, 0.4, -0.3, 0.2]),
+    }
+
+
+def test_future_trajectory_matches_goal_and_padding():
+    converter = _converter()
+    trajectory = _trajectory()
+
+    def check(frame_index, num, source_indices):
+        states = converter._future_trajectory(trajectory, frame_index, num)
+        assert set(states) == {
+            "rotation",
+            "translation",
+            "linear_velocity",
+            "angular_velocity",
+        }
+        ego = converter._ego_pose(trajectory, frame_index)
+        for name, value in states.items():
+            assert value.dtype == np.float32, name
+            expected_shape = (num, 3, 3) if name == "rotation" else (num, 3)
+            assert value.shape == expected_shape, name
+        for offset, source in enumerate(source_indices):
+            expected = converter._goal(ego, converter._ego_pose(trajectory, source))
+            for name, value in states.items():
+                np.testing.assert_allclose(value[offset], expected[name], atol=1e-6)
+
+    check(1, 4, [2, 3, 3, 3])
+    check(3, 2, [3, 3])
+
+
+def test_parse_arguments_num_future_trajectory_steps():
+    converter = _converter()
+    required = ["--input-scene-root", "a", "--output-scene-root", "b"]
+    args = converter.parse_arguments(required)
+    assert args.num_future_trajectory_steps == 20
+    assert args.visualize_future_trajectory is False
+    assert args.visualize_ego_pose is False
+    assert (
+        converter.parse_arguments(
+            required + ["--num-future-trajectory-steps", "7"]
+        ).num_future_trajectory_steps
+        == 7
+    )
+    assert (
+        converter.parse_arguments(
+            required + ["--visualize-future-trajectory"]
+        ).visualize_future_trajectory
+        is True
+    )
+    assert (
+        converter.parse_arguments(required + ["--visualize-ego-pose"]).visualize_ego_pose is True
+    )
+    both = converter.parse_arguments(
+        required + ["--visualize-future-trajectory", "--visualize-ego-pose"]
+    )
+    assert both.visualize_future_trajectory is True and both.visualize_ego_pose is True
+    for value in ("0", "-3", "abc"):
+        with pytest.raises(SystemExit):
+            converter.parse_arguments(required + ["--num-future-trajectory-steps", value])
+
+
+def test_write_frame_pickle_contains_future_trajectory(tmp_path, monkeypatch):
+    converter = _converter()
+    monkeypatch.setattr(converter, "_write_frame_images", lambda *args: ({}, {}))
+    trajectory = _trajectory()
+    (tmp_path / "frame_info_pkl").mkdir()
+    converter._write_frame(
+        tmp_path,
+        "scene",
+        0,
+        "1000",
+        trajectory,
+        converter._ego_pose(trajectory, 3),
+        {},
+        {},
+        False,
+        4,
+    )
+    with (tmp_path / "frame_info_pkl" / "1000.pkl").open("rb") as stream:
+        frame_data = pickle.load(stream)
+    expected_shapes = {
+        "rotation": (4, 3, 3),
+        "translation": (4, 3),
+        "linear_velocity": (4, 3),
+        "angular_velocity": (4, 3),
+    }
+    for name, shape in expected_shapes.items():
+        assert frame_data["future_trajectory"][name].shape == shape, name
+
+
+def test_write_episode_gates_visualizations(tmp_path, monkeypatch):
+    converter = _converter()
+    monkeypatch.setattr(converter, "_initialize_scene", lambda *args: {})
+    monkeypatch.setattr(converter, "_write_frame", lambda *args, **kwargs: "frame.pkl")
+    monkeypatch.setattr(converter, "_write_scene_index", lambda *args: None)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        converter, "_ego_pose_visualization", lambda *args: calls.append("ego_pose")
+    )
+    monkeypatch.setattr(
+        converter,
+        "_write_future_trajectory_visualizations",
+        lambda *args: calls.append("future"),
+    )
+    trajectory = _trajectory()
+    for episode, (visualize_future, visualize_ego) in enumerate(
+        [(False, False), (True, False), (False, True), (True, True)]
+    ):
+        calls.clear()
+        converter._write_episode(
+            "scene",
+            episode,
+            tmp_path,
+            trajectory,
+            ["1000"],
+            {},
+            False,
+            4,
+            visualize_future,
+            visualize_ego,
+        )
+        assert (tmp_path / f"sage3d-scene-{episode:06d}").is_dir()
+        expected = []
+        if visualize_ego:
+            expected.append("ego_pose")
+        if visualize_future:
+            expected.append("future")
+        assert calls == expected
+
+
+def test_future_trajectory_visualization_writes_one_png_per_frame(tmp_path):
+    converter = _converter()
+    frame_ids = ["1000", "1001", "1002", "1003"]
+    converter._write_future_trajectory_visualizations(tmp_path, _trajectory(), frame_ids, 6)
+    pngs = sorted((tmp_path / "future_trajectory_vis").iterdir())
+    assert [path.name for path in pngs] == [f"{frame_id}.png" for frame_id in frame_ids]
+    for png in pngs:
+        with Image.open(png) as image:
+            assert image.size[0] > 0 and image.size[1] > 0
+            assert np.asarray(image).size > 0
+
+
+def test_future_trajectory_figure_uses_relative_coordinates():
+    converter = _converter()
+    trajectory = _trajectory()
+    ego = converter._ego_pose(trajectory, 0)
+    goal = converter._goal(ego, converter._ego_pose(trajectory, 3))
+    future = converter._future_trajectory(trajectory, 0, 2)
+    fig = converter._future_trajectory_figure(ego, goal, future)
+    try:
+        ax = fig.axes[0]
+        lines = {line.get_label(): line for line in ax.lines}
+        axis = converter._EGO_AXIS_LENGTH_M
+        scale = converter._EGO_VELOCITY_SCALE_S
+
+        velocity = lines["ego_velocity"].get_xydata()
+        assert np.allclose(velocity[1], scale * ego["linear_velocity"][:2], atol=1e-6)
+        goal_heading = lines["goal_heading"].get_xydata()
+        assert np.allclose(goal_heading[0], goal["translation"][:2], atol=1e-6)
+        assert np.allclose(
+            goal_heading[1],
+            goal_heading[0] + axis * goal["rotation"][:2, 0],
+            atol=1e-6,
+        )
+
+        base = future["translation"][0][:2]
+        future_omega = float(future["angular_velocity"][0][2])
+        expected = {
+            "future_x": axis * future["rotation"][0][:2, 0],
+            "future_y": axis * future["rotation"][0][:2, 1],
+            "future_velocity": scale * future["linear_velocity"][0][:2],
+            "future_angular": axis
+            * (future["rotation"][0][:2, :2] @ np.array([np.cos(future_omega), np.sin(future_omega)])),
+        }
+        colors = {"future_x": "red", "future_y": "green", "future_velocity": "blue", "future_angular": "purple"}
+        for name, vector in expected.items():
+            segment = lines[name].get_xydata()
+            assert np.allclose(segment[0], base, atol=1e-6)
+            assert np.allclose(segment[1], base + vector, atol=1e-6)
+            assert lines[name].get_color() == colors[name]
+            assert lines[name].get_alpha() == 0.2
+            assert lines[name].get_linewidth() == 0.5
+
+        legend_labels = [text.get_text() for text in ax.get_legend().get_texts()]
+        assert set(legend_labels) >= set(expected)
+        for name in expected:
+            assert legend_labels.count(name) == 1
+        assert float(ax.get_aspect()) == 1.0
+        assert ax.get_xlabel() == "X forward [m]"
+        assert ax.get_ylabel() == "Y left [m]"
+    finally:
+        plt.close(fig)
