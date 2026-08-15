@@ -293,8 +293,6 @@ def _profile_intrinsic(profile: dict[str, Any]) -> list[float]:
         theta = math.radians(float(profile["horizontal_fov_deg"])) / 2.0
         theta2 = theta * theta
         theta_d = theta * (1.0 + k1 * theta2 + k2 * theta2**2 + k3 * theta2**3 + k4 * theta2**4)
-        if not math.isfinite(theta_d) or theta_d <= 0:
-            raise ValueError("opencv_fisheye angular polynomial must be finite and positive")
         focal = (width / 2.0) / theta_d
     if isinstance(focal, (list, tuple)):
         fx, fy = map(float, focal)
@@ -346,15 +344,14 @@ def _validate_summary(
         raise ValueError(f"{mode} summary camera_id mismatch")
     if summary.get("render_mode") != mode:
         raise ValueError(f"{mode} summary render_mode mismatch")
-    _same(summary.get("camera_model"), _profile_model(profile), f"{mode} camera model")
+    model = _profile_model(profile)
+    _same(summary.get("camera_model"), model, f"{mode} camera model")
     _same(summary.get("resolution"), list(_profile_resolution(profile)), f"{mode} resolution")
     intrinsic = _profile_intrinsic(profile)
     _same(summary.get("principal_point"), intrinsic[:2], f"{mode} principal point")
     _same(summary.get("focal_length_pixels"), intrinsic[2], f"{mode} focal length")
     summary_extrinsic = summary.get("camera_extrinsic")
     profile_extrinsic = profile.get("extrinsic")
-    if not isinstance(summary_extrinsic, dict):
-        raise ValueError(f"{mode} summary lacks camera_extrinsic")
     _same(
         summary_extrinsic.get("translation_body_m"),
         profile_extrinsic.get("translation_body_m"),
@@ -365,7 +362,7 @@ def _validate_summary(
         profile_extrinsic.get("rotation_rpy_deg"),
         f"{mode} extrinsic rotation",
     )
-    if _profile_model(profile) == "opencv_fisheye":
+    if model == "opencv_fisheye":
         _same(summary.get("fisheye_coefficients"), intrinsic[4:], f"{mode} fisheye coefficients")
     if mode == "depth":
         if summary.get("depth_type") != "distance_to_camera":
@@ -464,8 +461,7 @@ def _frame_ids(npz_path: Path, frame_count: int, control_dt: float) -> list[str]
     return ids
 
 
-def _validate_mask(path: Path, profile: dict[str, Any]) -> None:
-    width, height = _profile_resolution(profile)
+def _validate_mask(path: Path, width: int, height: int) -> None:
     with Image.open(path) as image:
         if image.mode != "L":
             raise ValueError(f"mask must be grayscale mode L, got {image.mode!r}")
@@ -983,7 +979,7 @@ def _load_camera(
         for path in depth_files:
             _validate_image(path, width, height, depth=True)
         mask_file = camera_dir / "valid_pixel_mask.png"
-        _validate_mask(mask_file, profile)
+        _validate_mask(mask_file, width, height)
         return {
             "profile": profile,
             "calibration": _calibration(profile),
