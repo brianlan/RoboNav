@@ -115,7 +115,7 @@ def _convert_scenes(
             reasons["missing source scene"] += 1
             skipped += 1
             continue
-        scene_succeeded, scene_skipped, scene_existing = _process_scene(
+        scene_succeeded, scene_skipped, scene_existing = _convert_scene(
             scene_dir,
             output_root,
             clone_images,
@@ -128,6 +128,97 @@ def _convert_scenes(
         skipped += scene_skipped
         existing += scene_existing
     return succeeded, skipped, existing, reasons
+
+
+def _convert_scene(
+    scene_dir: Path,
+    output_root: Path,
+    clone_images: bool,
+    reasons: Counter[str],
+    num_future_trajectory_steps: int,
+    visualize_future_trajectory: bool,
+    visualize_ego_pose: bool,
+) -> tuple[int, int, int]:
+    source_scene_id = scene_dir.name
+    try:
+        profiles, control_dt, records, validated = _load_scene_inputs(scene_dir)
+    except Exception as error:
+        _warning(source_scene_id, None, None, str(error))
+        reasons["invalid source scene"] += 1
+        return 0, 1, 0
+
+    succeeded = skipped = existing = 0
+    for record in tqdm(records, desc=f"processing {source_scene_id}"):
+        episode: int | None = None
+        try:
+            episode = int(record["episode_index"])
+            created = _convert_episode(
+                scene_dir,
+                episode,
+                record,
+                validated,
+                profiles,
+                control_dt,
+                output_root,
+                clone_images,
+                num_future_trajectory_steps,
+                visualize_future_trajectory,
+                visualize_ego_pose,
+            )
+            if created:
+                succeeded += 1
+            else:
+                _warning(source_scene_id, episode, None, "target scene already exists")
+                reasons["target exists"] += 1
+                skipped += 1
+                existing += 1
+        except Exception as error:
+            message = str(error)
+            camera_match = re.search(r"camera=([^:]+):", message)
+            _warning(source_scene_id, episode, camera_match.group(1) if camera_match else None, message)
+            reasons["invalid episode"] += 1
+            skipped += 1
+    return succeeded, skipped, existing
+
+
+def _convert_episode(
+    scene_dir: Path,
+    episode: int,
+    record: dict[str, Any],
+    validated: dict[int, dict[str, Any]],
+    profiles: dict[str, Any],
+    control_dt: float,
+    output_root: Path,
+    clone_images: bool,
+    num_future_trajectory_steps: int,
+    visualize_future_trajectory: bool,
+    visualize_ego_pose: bool,
+) -> bool:
+    source_scene_id = scene_dir.name
+    expected_name, t_output = _validate_episode_record(record, episode, validated)
+    npz_path = scene_dir / "optimized_trajectories" / expected_name
+    target = output_root / f"sage3d-{source_scene_id}-{episode:06d}"
+    if target.exists():
+        return False
+
+    trajectory = _trajectory(npz_path, control_dt, t_output)
+    frame_ids = _frame_ids(npz_path, len(trajectory["time_s"]), control_dt)
+    cameras = _load_cameras(
+        scene_dir / "rendered", source_scene_id, episode, len(frame_ids), profiles
+    )
+    _write_episode(
+        source_scene_id,
+        episode,
+        output_root,
+        trajectory,
+        frame_ids,
+        cameras,
+        clone_images,
+        num_future_trajectory_steps,
+        visualize_future_trajectory,
+        visualize_ego_pose,
+    )
+    return True
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -971,97 +1062,6 @@ def _validate_episode_record(
     if not validation_record or validation_record.get("validated") is not True:
         raise ValueError("independent validation did not pass")
     return expected_name, t_output
-
-
-def _convert_episode(
-    scene_dir: Path,
-    episode: int,
-    record: dict[str, Any],
-    validated: dict[int, dict[str, Any]],
-    profiles: dict[str, Any],
-    control_dt: float,
-    output_root: Path,
-    clone_images: bool,
-    num_future_trajectory_steps: int,
-    visualize_future_trajectory: bool,
-    visualize_ego_pose: bool,
-) -> bool:
-    source_scene_id = scene_dir.name
-    expected_name, t_output = _validate_episode_record(record, episode, validated)
-    npz_path = scene_dir / "optimized_trajectories" / expected_name
-    target = output_root / f"sage3d-{source_scene_id}-{episode:06d}"
-    if target.exists():
-        return False
-
-    trajectory = _trajectory(npz_path, control_dt, t_output)
-    frame_ids = _frame_ids(npz_path, len(trajectory["time_s"]), control_dt)
-    cameras = _load_cameras(
-        scene_dir / "rendered", source_scene_id, episode, len(frame_ids), profiles
-    )
-    _write_episode(
-        source_scene_id,
-        episode,
-        output_root,
-        trajectory,
-        frame_ids,
-        cameras,
-        clone_images,
-        num_future_trajectory_steps,
-        visualize_future_trajectory,
-        visualize_ego_pose,
-    )
-    return True
-
-
-def _process_scene(
-    scene_dir: Path,
-    output_root: Path,
-    clone_images: bool,
-    reasons: Counter[str],
-    num_future_trajectory_steps: int,
-    visualize_future_trajectory: bool,
-    visualize_ego_pose: bool,
-) -> tuple[int, int, int]:
-    source_scene_id = scene_dir.name
-    try:
-        profiles, control_dt, records, validated = _load_scene_inputs(scene_dir)
-    except Exception as error:
-        _warning(source_scene_id, None, None, str(error))
-        reasons["invalid source scene"] += 1
-        return 0, 1, 0
-
-    succeeded = skipped = existing = 0
-    for record in tqdm(records, desc=f"processing {source_scene_id}"):
-        episode: int | None = None
-        try:
-            episode = int(record["episode_index"])
-            converted = _convert_episode(
-                scene_dir,
-                episode,
-                record,
-                validated,
-                profiles,
-                control_dt,
-                output_root,
-                clone_images,
-                num_future_trajectory_steps,
-                visualize_future_trajectory,
-                visualize_ego_pose,
-            )
-            if converted:
-                succeeded += 1
-            else:
-                _warning(source_scene_id, episode, None, "target scene already exists")
-                reasons["target exists"] += 1
-                skipped += 1
-                existing += 1
-        except Exception as error:
-            message = str(error)
-            camera_match = re.search(r"camera=([^:]+):", message)
-            _warning(source_scene_id, episode, camera_match.group(1) if camera_match else None, message)
-            reasons["invalid episode"] += 1
-            skipped += 1
-    return succeeded, skipped, existing
 
 
 if __name__ == "__main__":
