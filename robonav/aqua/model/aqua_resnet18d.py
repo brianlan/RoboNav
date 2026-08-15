@@ -1,5 +1,6 @@
 import timm
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 from prefusion.models import BaseModel
@@ -63,6 +64,62 @@ class Concat(nn.Module):
         return torch.cat(inputs, dim=self.dim)
 
 
+class FiLMByGoalAndState(nn.Module):
+    def __init__(self, in_chans, out_chans, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.in_chans = in_chans
+        self.out_chans = out_chans
+        self.gamma_linear = nn.Linear(in_chans, out_chans)
+        self.beta_linear = nn.Linear(in_chans, out_chans)
+
+    def forward(self, feat, goal, state):
+        goal_n_state = torch.cat((goal, state), dim=1)
+        delta_gamma = self.gamma_linear(goal_n_state)
+        beta = self.beta_linear(goal_n_state)
+        return feat + feat * delta_gamma + beta
+
+
+class SpatialGate(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def forward(self, feat, goal, state):
+        return feat
+
+
+class SpatialFeatureCompressor(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def forward(self, feat):
+        return feat
+
+
+class SRU(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.hidden = None
+        self.cell = None
+
+    def forward(self, input):
+        return input
+
+
+class TemporalFiLM(nn.Module):
+    def __init__(self, in_chans, out_chans, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.in_chans = in_chans
+        self.out_chans = out_chans
+        self.gamma_linear = nn.Linear(in_chans, out_chans)
+        self.beta_linear = nn.Linear(in_chans, out_chans)
+
+    def forward(self, feat, hidden):
+        goal_n_state = torch.cat(hidden, dim=1)
+        delta_gamma = self.gamma_linear(goal_n_state)
+        beta = self.beta_linear(goal_n_state)
+        return feat + feat * delta_gamma + beta
+
+
 @MODELS.register_module()
 class AquaResNet18D(BaseModel):
     model_name = "resnet18d.ra4_e3600_r224_in1k"
@@ -102,13 +159,22 @@ class AquaResNet18D(BaseModel):
         self.act1 = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
-        self.pe_encoder = self._make_pe_encoder(6, 64)
-        self.rgb_pe_fuse = self._make_rgb_pe_fuse(64, 64, 64)
+        self.pe_encoder = nn.Conv2d(6, 64, 1)
+        self.rgb_pe_fuse = nn.Conv2d(64 + 64, 64, 1)
 
         self.layer1 = self._make_layer(64, 64)
         self.layer2 = self._make_layer(64, 128, stride=2)
         self.layer3 = self._make_layer(128, 256, stride=2)
         self.layer4 = self._make_layer(256, 512, stride=2)
+
+        self.film_by_goal_n_state = FiLMByGoalAndState()
+        self.spatial_gate = SpatialGate()
+        self.vfeat_compressor = SpatialFeatureCompressor()
+        self.f4_conv_1x1 = nn.Conv2d(512, 256, 1)
+        self.f3_conv_1x1 = nn.Conv2d(256, 256, 1)
+        self.sru = SRU()
+        self.temporal_film = TemporalFiLM()
+        self.history_enhanced_compressor = SpatialFeatureCompressor()
 
         self._init_weights()
         if pretrained:
@@ -129,14 +195,6 @@ class AquaResNet18D(BaseModel):
             BasicBlock(out_channels, out_channels),
         )
 
-    @staticmethod
-    def _make_pe_encoder(in_chan, out_chan):
-        return nn.Conv2d(in_chan, out_chan, 1)
-
-    @staticmethod
-    def _make_rgb_pe_fuse(rgb_chan, pe_chan, out_chan):
-        return nn.Conv2d(rgb_chan + pe_chan, out_chan, 1)
-
     def _init_weights(self):
         for module in self.modules():
             if isinstance(module, nn.Conv2d):
@@ -148,7 +206,8 @@ class AquaResNet18D(BaseModel):
             elif isinstance(module, BasicBlock):
                 nn.init.zeros_(module.bn2.weight)
 
-    def forward(self, rgb, pe, goal, state, hidden):
+    def forward(self, rgb, pe, goal, ego_poses):
+        device = rgb.device
         rgb = self.conv1(rgb)
         rgb = self.bn1(rgb)
         rgb = self.act1(rgb)
@@ -159,8 +218,35 @@ class AquaResNet18D(BaseModel):
         rgb_w_pe = self.rgb_pe_fuse(rgb_w_pe)
         rgb_w_pe = self.maxpool(rgb_w_pe)
 
-        x1 = self.layer1(rgb_w_pe)
-        x2 = self.layer2(x1)
-        x3 = self.layer3(x2)
-        x4 = self.layer4(x3)
-        return x1, x2, x3, x4, hidden
+        f1 = self.layer1(rgb_w_pe)
+        f2 = self.layer2(f1)
+        f3 = self.layer3(f2)
+        f4 = self.layer4(f3)
+
+        cur_velo = self._get_cur_velocity(ego_poses, device)
+        delta_pose = self._calc_delta_pose(ego_poses)
+
+        f4m = self.film_by_goal_n_state(f4, goal, cur_velo)
+        f4m_up = F.interpolate(self.f4_conv_1x1(f4m), scale_factor=2, mode="nearest")
+        f3_fused = F.relu(f4m_up + self.f3_conv_1x1(f3))
+        f3g = self.spatial_gate(f3_fused, goal, cur_velo)
+        scene_desc = self.vfeat_compressor(f3g)
+        cur_state = torch.cat((scene_desc, cur_velo, delta_pose, goal), dim=1)
+        hidden = self.sru(cur_state)
+        f3g_history_injected = self.temporal_film(f3g, hidden)
+        final_feat = self.history_enhanced_compressor(f3g_history_injected)
+
+        return f1, f2, f3, f4, final_feat, hidden
+
+    @staticmethod
+    def _get_cur_velocity(ego_poses, device):
+        return torch.vstack(
+            [e.transformables["0"].linear_velocity for e in ego_poses]
+        ).to(device=device)
+
+    @staticmethod
+    def _calc_delta_pose(ego_poses, device):
+        pass
+
+    def construct_sru_state(self, goal, ego_poses):
+        pass

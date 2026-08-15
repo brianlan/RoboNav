@@ -179,9 +179,6 @@ model = dict(
         freeze=False,
         init_cfg=None,
     ),
-    neck=dict(
-        type="robonav.TvFPN", in_channels_list=[64, 128, 256, 512], out_channels=256
-    ),
 )
 
 val_evaluator = dict(type="robonav.DummyAccuracyMetric")
