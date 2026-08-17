@@ -12,10 +12,10 @@ MODELS.register_module()
 class TemporalFuser(BaseModel):
     def __init__(self, input_chans, hidden_chans, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.vfeat_compressor = SpatialFeatureCompressor()
+        self.vfeat_compressor = SpatialFeatureCompressor(input_chans)
         self.sru = SRU(input_chans, hidden_chans)
         self.temporal_film = TemporalFiLM(hidden_chans, hidden_chans)
-        self.history_enhanced_compressor = SpatialFeatureCompressor()
+        self.history_enhanced_compressor = SpatialFeatureCompressor(input_chans)
         self.hidden = self.cell = None
 
     def forward(self, f3g, velo, delta_pose, goal):
@@ -28,11 +28,17 @@ class TemporalFuser(BaseModel):
 
 
 class SpatialFeatureCompressor(nn.Module):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, num_channels, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.conv1 = nn.Conv2d(num_channels, num_channels, 3, padding=1, stride=2)
+        self.conv2 = nn.Conv2d(num_channels, num_channels, 3, padding=1, stride=2)
+        self.conv3 = nn.Conv2d(num_channels, num_channels, (6, 8))
 
     def forward(self, feat):
-        return feat
+        feat = self.conv1(feat)
+        feat = self.conv2(feat)
+        feat = self.conv3(feat)
+        return feat.squeeze(-1).squeeze(-1)
 
 
 class TemporalFiLM(nn.Module):

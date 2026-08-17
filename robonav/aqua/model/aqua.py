@@ -45,19 +45,18 @@ class AquaNet(BaseModel):
     ):
         B = len(camera_images)
         camera_images = torch.row_stack(camera_images)
-        device = camera_images.device
         pe = torch.row_stack(position_embedding)
+        goal = torch.row_stack(goal)
+        twist = torch.row_stack(twist)
+        delta_poses = torch.row_stack(delta_poses)
+
         f1, f2, f3, f4 = self.backbone(camera_images, pe)
+        f3g = self.feature_modulation(f4, f3, twist, goal)
+        final_feat, hidden = self.temporal_fuser(f3g, twist, delta_poses, goal)
 
-        cur_velo = self._get_cur_velocity(ego_poses)
-        delta_pose = self._calc_delta_pose(ego_poses, device)
+        f4d, f3d, f2d, f2d_up = self.depth_head(f4, f3, f2)
 
-        # f3g = self.feature_modulation(f4, f3, cur_velo, goal)
-        # final_feat, hidden = self.temporal_fuser(f3g, cur_velo, delta_pose, goal)
-
-        # f4d, f3d, f2d, f2d_up = self.depth_head(f4, f3, f2)
-
-        # trajectory = self.trajectory_head(final_feat, hidden)
+        trajectory = self.trajectory_head(final_feat, hidden)
 
         if mode == "loss":
             # TODO: dummy loss, replace with real head
