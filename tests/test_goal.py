@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import torch
 
 from robonav.aqua.tensor_smith.goal_tensor_smith import GoalTensorSmith
@@ -69,28 +70,21 @@ def test_goal_loader_field_mapping():
     assert goal.tensor_smith is smith
 
     goal.to_tensor()  # tensor_smith propagates through to_tensor
-    assert goal.tensor["translation"].shape == (3, 1)
+    assert goal.tensor.shape == (6,)
+    assert goal.tensor.dtype == torch.float32
 
 
 def test_goal_tensor_smith_tensors():
     out = GoalTensorSmith()(_goal())
 
-    assert set(out) == {"rotation", "translation", "linear_velocity", "angular_velocity"}
-    for v in out.values():
-        assert v.dtype == torch.float32
-    assert out["rotation"].shape == (3, 3)
-    assert out["translation"].shape == (3, 1)
-    assert out["linear_velocity"].shape == (3, 1)
-    assert out["angular_velocity"].shape == (3, 1)
-    np.testing.assert_allclose(out["translation"].numpy(), [[1], [2], [3]])
+    assert out.dtype == torch.float32
+    assert out.shape == (6,)
+    np.testing.assert_allclose(out.numpy(), [1, 2, np.pi / 2, 4, 5, 9])
 
 
-def test_goal_tensor_smith_without_velocities():
+def test_goal_tensor_smith_requires_velocities():
     frame_data = {"goal": {"rotation": np.eye(3).tolist(), "translation": [1, 2, 3]}}
     goal = GoalLoader(data_root=None).load("goal", None, frame_data, None)
 
-    out = GoalTensorSmith()(goal)
-
-    assert set(out) == {"rotation", "translation"}
-    for v in out.values():
-        assert v.dtype == torch.float32
+    with pytest.raises(ValueError, match="requires linear_velocity and angular_velocity"):
+        GoalTensorSmith()(goal)

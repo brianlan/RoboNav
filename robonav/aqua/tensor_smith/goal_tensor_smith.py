@@ -12,6 +12,10 @@ __all__ = ["GoalTensorSmith"]
 @TENSOR_SMITHS.register_module()
 class GoalTensorSmith(TensorSmith):
     def __call__(self, transformable: Goal):
+        if transformable.linear_velocity is None or transformable.angular_velocity is None:
+            raise ValueError(
+                "GoalTensorSmith requires linear_velocity and angular_velocity"
+            )
         rot = Rotation.from_matrix(transformable.rotation).as_euler("XYZ", degrees=False)
         x, y = transformable.translation.flatten()[:2].tolist()
         vx, vy = transformable.linear_velocity.flatten()[:2].tolist()

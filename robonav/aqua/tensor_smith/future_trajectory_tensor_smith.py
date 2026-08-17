@@ -13,6 +13,10 @@ __all__ = ["FutureTrajectoryTensorSmith"]
 @TENSOR_SMITHS.register_module()
 class FutureTrajectoryTensorSmith(TensorSmith):
     def __call__(self, transformable: FutureTrajectory):
+        if transformable.linear_velocity is None or transformable.angular_velocity is None:
+            raise ValueError(
+                "FutureTrajectoryTensorSmith requires linear_velocity and angular_velocity"
+            )
         rot = Rotation.from_matrix(transformable.rotation).as_euler("XYZ", degrees=False)
         xy = transformable.translation[:, :2]
         vx_vy = transformable.linear_velocity[:, :2]

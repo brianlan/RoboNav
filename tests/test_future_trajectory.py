@@ -5,7 +5,6 @@ import pytest
 import torch
 from mmengine.config import Config
 
-from robonav.aqua.model.aqua import AquaNet
 from robonav.aqua.model_feeder.aqua_model_feeder import AquaModelFeeder
 from robonav.aqua.tensor_smith.future_trajectory_tensor_smith import (
     FutureTrajectoryTensorSmith,
@@ -98,7 +97,8 @@ def test_loader_mapping_order_and_tensor_smith_propagation():
     np.testing.assert_allclose(traj.angular_velocity, [[7, 8, 9], [17, 18, 19]])
 
     traj.to_tensor()
-    assert traj.tensor["translation"].shape == (2, 3)
+    assert traj.tensor.shape == (2, 6)
+    assert traj.tensor.dtype == torch.float32
 
 
 def test_loader_raises_on_mismatched_field_lengths():
@@ -111,22 +111,20 @@ def test_loader_raises_on_mismatched_field_lengths():
 def test_tensor_smith_values_dtypes_shapes():
     out = FutureTrajectoryTensorSmith()(_load())
 
-    assert set(out) == {"rotation", "translation", "linear_velocity", "angular_velocity"}
-    for v in out.values():
-        assert v.dtype == torch.float32
-    assert out["rotation"].shape == (2, 3, 3)
-    assert out["translation"].shape == (2, 3)
-    assert out["linear_velocity"].shape == (2, 3)
-    assert out["angular_velocity"].shape == (2, 3)
-    np.testing.assert_allclose(out["translation"].numpy(), [[1, 2, 3], [11, 12, 13]])
+    assert out.dtype == torch.float32
+    assert out.shape == (2, 6)
+    np.testing.assert_allclose(
+        out.numpy(),
+        [
+            [1, 2, np.pi / 2, 4, 5, 9],
+            [11, 12, np.pi / 2, 14, 15, 19],
+        ],
+    )
 
 
-def test_tensor_smith_without_velocities():
-    out = FutureTrajectoryTensorSmith()(_load(_frame_data(with_velocities=False)))
-
-    assert set(out) == {"rotation", "translation"}
-    for v in out.values():
-        assert v.dtype == torch.float32
+def test_tensor_smith_requires_velocities():
+    with pytest.raises(ValueError, match="requires linear_velocity and angular_velocity"):
+        FutureTrajectoryTensorSmith()(_load(_frame_data(with_velocities=False)))
 
 
 def test_config_wiring_and_registry_build():
@@ -142,10 +140,11 @@ def test_config_wiring_and_registry_build():
     smith = TENSOR_SMITHS.build({"type": ft_cfg["tensor_smith"]["type"]})
     traj = loader.load("ft", None, _frame_data(), None, tensor_smith=smith)
     traj.to_tensor()
-    assert set(traj.tensor) == {"rotation", "translation", "linear_velocity", "angular_velocity"}
+    assert traj.tensor.shape == (2, 6)
+    assert traj.tensor.dtype == torch.float32
 
 
-def test_model_feeder_passes_tensor_dict():
+def test_model_feeder_passes_trajectory_tensor():
     traj = _load(tensor_smith=FutureTrajectoryTensorSmith())
     traj.to_tensor()
     frame = {"index_info": {}, "transformables": {"future_trajectory": traj}}
@@ -153,23 +152,4 @@ def test_model_feeder_passes_tensor_dict():
 
     assert out["future_trajectory"] is traj.tensor
     assert not isinstance(out["future_trajectory"], FutureTrajectory)
-    assert out["future_trajectory"]["rotation"].shape == (2, 3, 3)
-
-
-def test_aqua_net_forward_accepts_future_trajectory():
-    model = AquaNet(
-        data_preprocessor=dict(type="robonav.FrameBatchMerger", device="cpu"),
-        backbone=dict(type="robonav.AquaResNet18D"),
-        neck=dict(type="robonav.TvFPN", in_channels_list=[64, 128, 256, 512], out_channels=8),
-    )
-    traj = _load(tensor_smith=FutureTrajectoryTensorSmith())
-    traj.to_tensor()
-    out = model(
-        index_info=None,
-        camera_images=[torch.randn(1, 3, 64, 64)],
-        position_embedding=[torch.randn(1, 6, 32, 32)],
-        goal=None,
-        future_trajectory=traj.tensor,
-        mode="loss",
-    )
-    assert "loss" in out
+    assert out["future_trajectory"].shape == (2, 6)
