@@ -25,7 +25,7 @@ class AquaModelFeeder(BaseModelFeeder):
         self.debug = debug
         self.pe_downsample_factor = pe_downsample_factor
         self.pe_range = torch.tensor(pe_range)
-        self.goal_replace_prob=goal_replace_prob
+        self.goal_replace_prob = goal_replace_prob
 
     def process(self, frame_batch: list) -> dict | list:
         processed_batch: list[dict] = []
@@ -45,9 +45,9 @@ class AquaModelFeeder(BaseModelFeeder):
     def _process_transformables(self, frame) -> dict:
         transformables = frame["transformables"]
         out = {}
-        for _, trsfmb in transformables.items():
-            if isinstance(trsfmb, CameraImageSet):
-                cam_ids, camera_images = zip(*trsfmb.transformables.items())
+        for _, trnsfmb in transformables.items():
+            if isinstance(trnsfmb, CameraImageSet):
+                cam_ids, camera_images = zip(*trnsfmb.transformables.items())
                 img_tensor = torch.vstack(
                     [t.tensor["img"].unsqueeze(0) for t in camera_images]
                 )
@@ -73,23 +73,37 @@ class AquaModelFeeder(BaseModelFeeder):
                     ]
                 )
                 continue
-            if isinstance(trsfmb, CameraDepthSet):
-                _, camera_images = zip(*trsfmb.transformables.items())
+            if isinstance(trnsfmb, CameraDepthSet):
+                _, camera_images = zip(*trnsfmb.transformables.items())
                 img_tensor = torch.vstack(
                     [t.tensor["img"].unsqueeze(0) for t in camera_images]
                 )
                 out["camera_depths"] = img_tensor
                 continue
-            if isinstance(trsfmb, EgoPoseSet):
-                out["ego_poses"] = frame["transformables"].get("ego_poses")
+            if isinstance(trnsfmb, EgoPoseSet):
+                out["ego_poses"] = self._convert_egopose_to_torch_tensor(trnsfmb)
                 continue
-            if isinstance(trsfmb, Goal):
-                out["goal"] = frame["transformables"].get("goal")
+            if isinstance(trnsfmb, Goal):
+                out["goal"] = trnsfmb.tensor
                 continue
-            if isinstance(trsfmb, FutureTrajectory):
-                out["future_trajectory"] = trsfmb.tensor  # dict of tensors, moved to device by FrameBatchMerger
+            if isinstance(trnsfmb, FutureTrajectory):
+                out["future_trajectory"] = (
+                    trnsfmb.tensor
+                )  # dict of tensors, moved to device by FrameBatchMerger
                 continue
         return out
+
+    @staticmethod
+    def _convert_egopose_to_torch_tensor(ego_poses):
+        return {
+            k: {
+                "rotation": torch.tensor(e.rotation, dtype=torch.float32),
+                "translation": torch.tensor(e.translation, dtype=torch.float32),
+                "linear_velocity": torch.tensor(e.linear_velocity, dtype=torch.float32),
+                "angular_velocity": torch.tensor(e.angular_velocity, dtype=torch.float32),
+            }
+            for k, e in ego_poses.transformables.items()
+        }
 
     def _create_camera_pe(self, frame_out_dict):
         """Create position embedding for camera.

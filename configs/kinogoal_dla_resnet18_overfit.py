@@ -83,7 +83,7 @@ train_dataset = dict(
         dict(type="BGR2RGB"),
         dict(type="RenderVirtualCamera", camera_settings=camera_settings),
         # dict(type="RandomRenderExtrinsic", angles=[2, 2, 2]),
-        # dict(type="RandomTranslateSpace", translation=(1, 1, 1)),
+        # dict(type="RandomTranslateSpace", translation=(1, 1, 0)),
         # dict(type="RandomRotateSpace", angles=(0, 0, 90), prob_inverse_cameras_rotation=0),
         # dict(type="RandomMirrorSpace"),
         # dict(type="RandomImageISP", prob=0.1),
@@ -181,9 +181,28 @@ model = dict(
     ),
     feature_modulation=dict(
         type="robonav.FeatureModulation",
+        f4_chans=512,
+        f3_chans=256,
+        out_chans=256,
     ),
     temporal_fuser=dict(
         type="robonav.TemporalFuser",
+        input_chans=256,
+        hidden_chans=256,
+    ),
+    depth_head=dict(
+        type="robonav.DepthHead",
+        f4_chans=512,
+        f3_chans=256,
+        f2_chans=128,
+    ),
+    trajectory_head=dict(
+        type="robonav.TrajectoryHead",
+        feat_chans=256,
+        hidden_chans=256,
+        intermediate_chans=64,
+        num_trajectory_steps=20,
+        out_chans=7,
     ),
 )
 

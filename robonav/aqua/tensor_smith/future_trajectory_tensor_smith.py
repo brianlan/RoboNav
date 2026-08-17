@@ -1,4 +1,6 @@
 import torch
+import numpy as np
+from scipy.spatial.transform import Rotation
 from prefusion.dataset.tensor_smith import TensorSmith
 
 from robonav.aqua.transformable.future_trajectory import FutureTrajectory
@@ -11,16 +13,8 @@ __all__ = ["FutureTrajectoryTensorSmith"]
 @TENSOR_SMITHS.register_module()
 class FutureTrajectoryTensorSmith(TensorSmith):
     def __call__(self, transformable: FutureTrajectory):
-        tensor_dict = dict(
-            rotation=torch.tensor(transformable.rotation, dtype=torch.float32),
-            translation=torch.tensor(transformable.translation, dtype=torch.float32),
-        )
-        if transformable.linear_velocity is not None:
-            tensor_dict["linear_velocity"] = torch.tensor(
-                transformable.linear_velocity, dtype=torch.float32
-            )
-        if transformable.angular_velocity is not None:
-            tensor_dict["angular_velocity"] = torch.tensor(
-                transformable.angular_velocity, dtype=torch.float32
-            )
-        return tensor_dict
+        rot = Rotation.from_matrix(transformable.rotation).as_euler("XYZ", degrees=False)
+        xy = transformable.translation[:, :2]
+        vx_vy = transformable.linear_velocity[:, :2]
+        omega = transformable.angular_velocity[:, 2:3]
+        return torch.tensor(np.concatenate([xy, rot[:, 2:3], vx_vy, omega], axis=1), dtype=torch.float32)

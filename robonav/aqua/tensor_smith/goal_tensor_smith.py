@@ -1,5 +1,6 @@
 import torch
 from prefusion.dataset.tensor_smith import TensorSmith
+from scipy.spatial.transform import Rotation
 
 from robonav.aqua.transformable.goal import Goal
 from robonav.registry import TENSOR_SMITHS
@@ -11,16 +12,8 @@ __all__ = ["GoalTensorSmith"]
 @TENSOR_SMITHS.register_module()
 class GoalTensorSmith(TensorSmith):
     def __call__(self, transformable: Goal):
-        tensor_dict = dict(
-            rotation=torch.tensor(transformable.rotation, dtype=torch.float32),
-            translation=torch.tensor(transformable.translation, dtype=torch.float32),
-        )
-        if transformable.linear_velocity is not None:
-            tensor_dict["linear_velocity"] = torch.tensor(
-                transformable.linear_velocity, dtype=torch.float32
-            )
-        if transformable.angular_velocity is not None:
-            tensor_dict["angular_velocity"] = torch.tensor(
-                transformable.angular_velocity, dtype=torch.float32
-            )
-        return tensor_dict
+        rot = Rotation.from_matrix(transformable.rotation).as_euler("XYZ", degrees=False)
+        x, y = transformable.translation.flatten()[:2].tolist()
+        vx, vy = transformable.linear_velocity.flatten()[:2].tolist()
+        omega = transformable.angular_velocity.flatten()[-1]
+        return torch.tensor([x, y, rot[2], vx, vy, omega], dtype=torch.float32)

@@ -10,18 +10,19 @@ __all__ = ["FeatureModulation"]
 
 @MODELS.register_module()
 class FeatureModulation(BaseModel):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, f4_chans, f3_chans, out_chans, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.film_by_goal_n_state = FiLMByGoalAndState()
+        self.film_by_goal_n_state = FiLMByGoalAndState(f4_chans, f4_chans)
         self.spatial_gate = SpatialGate()
-        self.f4_conv_1x1 = nn.Conv2d(512, 256, 1)
-        self.f3_conv_1x1 = nn.Conv2d(256, 256, 1)
+        self.f4_conv_1x1 = nn.Conv2d(f4_chans, out_chans, 1)
+        self.f3_conv_1x1 = nn.Conv2d(f3_chans, out_chans, 1)
 
-    def forward(self, feat, goal, state):
-        f4m = self.film_by_goal_n_state(f4, goal, cur_velo)
+    def forward(self, f4, f3, velo, goal):
+        f4m = self.film_by_goal_n_state(f4, goal, velo)
         f4m_up = F.interpolate(self.f4_conv_1x1(f4m), scale_factor=2, mode="nearest")
         f3_fused = F.relu(f4m_up + self.f3_conv_1x1(f3))
-        f3g = self.spatial_gate(f3_fused, goal, cur_velo)
+        f3g = self.spatial_gate(f3_fused, goal, velo)
+        return f3g
 
 
 class FiLMByGoalAndState(nn.Module):
