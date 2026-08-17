@@ -1,6 +1,5 @@
 import timm
 import torch
-import torch.nn.functional as F
 from torch import nn
 
 from prefusion.models import BaseModel
@@ -55,71 +54,6 @@ class BasicBlock(nn.Module):
         return self.act2(x + shortcut)
 
 
-class Concat(nn.Module):
-    def __init__(self, dim=1):
-        super().__init__()
-        self.dim = dim
-
-    def forward(self, inputs):
-        return torch.cat(inputs, dim=self.dim)
-
-
-class FiLMByGoalAndState(nn.Module):
-    def __init__(self, in_chans, out_chans, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.in_chans = in_chans
-        self.out_chans = out_chans
-        self.gamma_linear = nn.Linear(in_chans, out_chans)
-        self.beta_linear = nn.Linear(in_chans, out_chans)
-
-    def forward(self, feat, goal, state):
-        goal_n_state = torch.cat((goal, state), dim=1)
-        delta_gamma = self.gamma_linear(goal_n_state)
-        beta = self.beta_linear(goal_n_state)
-        return feat + feat * delta_gamma + beta
-
-
-class SpatialGate(nn.Module):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def forward(self, feat, goal, state):
-        return feat
-
-
-class SpatialFeatureCompressor(nn.Module):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def forward(self, feat):
-        return feat
-
-
-class SRU(nn.Module):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.hidden = None
-        self.cell = None
-
-    def forward(self, input):
-        return input
-
-
-class TemporalFiLM(nn.Module):
-    def __init__(self, in_chans, out_chans, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.in_chans = in_chans
-        self.out_chans = out_chans
-        self.gamma_linear = nn.Linear(in_chans, out_chans)
-        self.beta_linear = nn.Linear(in_chans, out_chans)
-
-    def forward(self, feat, hidden):
-        goal_n_state = torch.cat(hidden, dim=1)
-        delta_gamma = self.gamma_linear(goal_n_state)
-        beta = self.beta_linear(goal_n_state)
-        return feat + feat * delta_gamma + beta
-
-
 @MODELS.register_module()
 class AquaResNet18D(BaseModel):
     model_name = "resnet18d.ra4_e3600_r224_in1k"
@@ -167,15 +101,6 @@ class AquaResNet18D(BaseModel):
         self.layer3 = self._make_layer(128, 256, stride=2)
         self.layer4 = self._make_layer(256, 512, stride=2)
 
-        self.film_by_goal_n_state = FiLMByGoalAndState()
-        self.spatial_gate = SpatialGate()
-        self.vfeat_compressor = SpatialFeatureCompressor()
-        self.f4_conv_1x1 = nn.Conv2d(512, 256, 1)
-        self.f3_conv_1x1 = nn.Conv2d(256, 256, 1)
-        self.sru = SRU()
-        self.temporal_film = TemporalFiLM()
-        self.history_enhanced_compressor = SpatialFeatureCompressor()
-
         self._init_weights()
         if pretrained:
             source = timm.create_model(
@@ -206,8 +131,7 @@ class AquaResNet18D(BaseModel):
             elif isinstance(module, BasicBlock):
                 nn.init.zeros_(module.bn2.weight)
 
-    def forward(self, rgb, pe, goal, ego_poses):
-        device = rgb.device
+    def forward(self, rgb, pe):
         rgb = self.conv1(rgb)
         rgb = self.bn1(rgb)
         rgb = self.act1(rgb)
@@ -223,30 +147,4 @@ class AquaResNet18D(BaseModel):
         f3 = self.layer3(f2)
         f4 = self.layer4(f3)
 
-        cur_velo = self._get_cur_velocity(ego_poses, device)
-        delta_pose = self._calc_delta_pose(ego_poses)
-
-        f4m = self.film_by_goal_n_state(f4, goal, cur_velo)
-        f4m_up = F.interpolate(self.f4_conv_1x1(f4m), scale_factor=2, mode="nearest")
-        f3_fused = F.relu(f4m_up + self.f3_conv_1x1(f3))
-        f3g = self.spatial_gate(f3_fused, goal, cur_velo)
-        scene_desc = self.vfeat_compressor(f3g)
-        cur_state = torch.cat((scene_desc, cur_velo, delta_pose, goal), dim=1)
-        hidden = self.sru(cur_state)
-        f3g_history_injected = self.temporal_film(f3g, hidden)
-        final_feat = self.history_enhanced_compressor(f3g_history_injected)
-
-        return f1, f2, f3, f4, final_feat, hidden
-
-    @staticmethod
-    def _get_cur_velocity(ego_poses, device):
-        return torch.vstack(
-            [e.transformables["0"].linear_velocity for e in ego_poses]
-        ).to(device=device)
-
-    @staticmethod
-    def _calc_delta_pose(ego_poses, device):
-        pass
-
-    def construct_sru_state(self, goal, ego_poses):
-        pass
+        return f1, f2, f3, f4

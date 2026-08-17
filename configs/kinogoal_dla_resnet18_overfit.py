@@ -179,6 +179,12 @@ model = dict(
         freeze=False,
         init_cfg=None,
     ),
+    feature_modulation=dict(
+        type="robonav.FeatureModulation",
+    ),
+    temporal_fuser=dict(
+        type="robonav.TemporalFuser",
+    ),
 )
 
 val_evaluator = dict(type="robonav.DummyAccuracyMetric")
