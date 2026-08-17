@@ -1,4 +1,5 @@
 import torch
+from scipy.spatial.transform import Rotation
 from prefusion.dataset.model_feeder import BaseModelFeeder
 from prefusion.dataset.transform import CameraImageSet, CameraDepthSet, EgoPoseSet
 
@@ -81,17 +82,50 @@ class AquaModelFeeder(BaseModelFeeder):
                 out["camera_depths"] = img_tensor
                 continue
             if isinstance(trnsfmb, EgoPoseSet):
-                out["ego_poses"] = self._convert_egopose_to_torch_tensor(trnsfmb)
+                out["ego_poses"] = self._convert_egopose_to_torch_tensor(
+                    trnsfmb.transformables
+                )
+                out["delta_poses"] = self._calc_delta_pose(trnsfmb.transformables)
+                out["twist"] = self._get_twist_from_ego_poses(trnsfmb.transformables)
                 continue
             if isinstance(trnsfmb, Goal):
                 out["goal"] = trnsfmb.tensor
                 continue
             if isinstance(trnsfmb, FutureTrajectory):
-                out["future_trajectory"] = (
-                    trnsfmb.tensor
-                )  # dict of tensors, moved to device by FrameBatchMerger
+                out["future_trajectory"] = trnsfmb.tensor
                 continue
         return out
+
+    @staticmethod
+    def _calc_delta_pose(ego_poses):
+        if all(["-1" not in e for e in ego_poses]):
+            return torch.tensor([0, 0, 0], dtype=torch.float32)
+        delta_poses = []
+        for e in ego_poses:
+            R_w_e1, t_w_e1 = e["-1"]["rotation"], e["-1"]["translation"]
+            R_w_e2, t_w_e2 = e["0"]["rotation"], e["0"]["translation"]
+
+            # R_e1_e2 = R_e1_w @ R_w_e2 = R'_w_e1 @ R_w_e2
+            R_e1_e2 = R_w_e1.T @ R_w_e2
+            delta_yaw = Rotation.from_matrix(R_e1_e2.detach().cpu().numpy()).as_euler(
+                "XYZ", degrees=False
+            )[2]
+            delta_yaw = torch.tensor(
+                delta_yaw, device=R_e1_e2.device, dtype=R_e1_e2.dtype
+            )
+
+            # t_e1_e2 = R_e1_w @ t_w_e2 + t_e1_w = R'_w_e1 @ t_w_e2 - R'_w_e1 @ t_w_e1 = R'_w_e1 @ (t_w_e2 - t_w_e1)
+            t_e1_e2 = R_w_e1.T @ (t_w_e2 - t_w_e1)
+            delta_pose = torch.cat([t_e1_e2.flatten()[:2], delta_yaw.unsqueeze(0)])
+            delta_poses.append(delta_pose)
+
+        return torch.vstack(delta_poses)
+
+    @staticmethod
+    def _get_twist_from_ego_poses(ego_poses):
+        vx_vy = torch.vstack([e["0"]["linear_velocity"].flatten()[:2] for e in ego_poses])
+        omega = torch.vstack([e["0"]["angular_velocity"].flatten()[2] for e in ego_poses])
+        return torch.concat([vx_vy, omega], dim=1) 
 
     @staticmethod
     def _convert_egopose_to_torch_tensor(ego_poses):
@@ -100,9 +134,11 @@ class AquaModelFeeder(BaseModelFeeder):
                 "rotation": torch.tensor(e.rotation, dtype=torch.float32),
                 "translation": torch.tensor(e.translation, dtype=torch.float32),
                 "linear_velocity": torch.tensor(e.linear_velocity, dtype=torch.float32),
-                "angular_velocity": torch.tensor(e.angular_velocity, dtype=torch.float32),
+                "angular_velocity": torch.tensor(
+                    e.angular_velocity, dtype=torch.float32
+                ),
             }
-            for k, e in ego_poses.transformables.items()
+            for k, e in ego_poses.items()
         }
 
     def _create_camera_pe(self, frame_out_dict):
