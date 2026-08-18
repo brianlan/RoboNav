@@ -22,7 +22,7 @@ find_unused_parameters = True
 num_gpus = 1
 batch_size = 2
 num_epochs = 2000
-possible_sequence_lengths = [20]
+possible_sequence_lengths = [10]
 
 # Virtual Camera settings
 camera_settings = {
@@ -195,6 +195,13 @@ model = dict(
         f4_chans=512,
         f3_chans=256,
         f2_chans=128,
+        f1_chans=64,
+        decoder_chans=64,
+    ),
+    depth_loss=dict(
+        type="robonav.MultiScaleDepthLoss",
+        beta=0.1,
+        loss_weight=1.0,
     ),
     trajectory_head=dict(
         type="robonav.TrajectoryHead",

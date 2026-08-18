@@ -80,6 +80,9 @@ class AquaModelFeeder(BaseModelFeeder):
                     [t.tensor["img"].unsqueeze(0) for t in camera_images]
                 )
                 out["camera_depths"] = img_tensor
+                out["camera_depth_valid_masks"] = torch.vstack(
+                    [t.tensor["valid_mask"].unsqueeze(0) for t in camera_images]
+                )
                 continue
             if isinstance(trnsfmb, EgoPoseSet):
                 ego_poses = self._convert_egopose_to_torch_tensor(

@@ -15,6 +15,7 @@ def test_robonav_registrations():
     expected = (
         (LOOPS, "StreamingSequenceBPTTTrainLoop", "robonav.aqua.runner.loop"),
         (MODELS, "AquaNet", "robonav.aqua.model.aqua"),
+        (MODELS, "MultiScaleDepthLoss", "robonav.aqua.loss.multiscale_depth_loss"),
         (MODELS, "FrameBatchMerger", "robonav.common.model.data_preprocessor"),
         (MODEL_FEEDERS, "AquaModelFeeder", "robonav.aqua.model_feeder.aqua_model_feeder"),
         (TENSOR_SMITHS, "CameraDepthTensor", "robonav.aqua.tensor_smith.camera_tensor_smith"),
