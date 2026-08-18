@@ -1,5 +1,6 @@
 from mmengine import Registry
 from prefusion.registry import (
+    LOG_PROCESSORS as PREFUSION_LOG_PROCESSORS,
     LOOPS as PREFUSION_LOOPS,
     METRICS as PREFUSION_METRICS,
     MODELS as PREFUSION_MODELS,
@@ -9,6 +10,7 @@ from prefusion.registry import (
     TRANSFORMABLE_LOADERS as PREFUSION_TRANSFORMABLE_LOADERS,
 )
 
+LOG_PROCESSORS = Registry("log_processor", parent=PREFUSION_LOG_PROCESSORS, scope="robonav")
 LOOPS = Registry("loop", parent=PREFUSION_LOOPS, scope="robonav")
 MODELS = Registry("model", parent=PREFUSION_MODELS, scope="robonav")
 MODEL_FEEDERS = Registry(
@@ -26,6 +28,7 @@ TRANSFORMABLE_LOADERS = Registry(
 )
 
 __all__ = [
+    "LOG_PROCESSORS",
     "LOOPS",
     "MODELS",
     "MODEL_FEEDERS",

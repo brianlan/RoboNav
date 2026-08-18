@@ -272,7 +272,7 @@ visualizer = dict(
     ],
 )
 
-log_processor = dict(type="prefusion.SequenceAwareLogProcessor", tabulate_ncols=5)
+log_processor = dict(type="robonav.StreamingSequenceBPTTLogProcessor", tabulate_ncols=5)
 
 default_hooks = dict(
     timer=dict(type="IterTimerHook"),

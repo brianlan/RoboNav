@@ -114,7 +114,7 @@ def test_registry_and_overfit_config_build():
     assert head.laterals[-1].in_channels == 64
     assert head.laterals[-1].out_channels == 64
     assert loss.beta == 0.1
-    assert config.possible_sequence_lengths == [10]
+    assert config.possible_sequence_lengths == [20]
     assert config.transformables.camera_depths.tensor_smith.max_depth == 5
 
 
