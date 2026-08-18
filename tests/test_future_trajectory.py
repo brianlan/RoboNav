@@ -97,7 +97,7 @@ def test_loader_mapping_order_and_tensor_smith_propagation():
     np.testing.assert_allclose(traj.angular_velocity, [[7, 8, 9], [17, 18, 19]])
 
     traj.to_tensor()
-    assert traj.tensor.shape == (2, 6)
+    assert traj.tensor.shape == (2, 7)
     assert traj.tensor.dtype == torch.float32
 
 
@@ -112,13 +112,14 @@ def test_tensor_smith_values_dtypes_shapes():
     out = FutureTrajectoryTensorSmith()(_load())
 
     assert out.dtype == torch.float32
-    assert out.shape == (2, 6)
+    assert out.shape == (2, 7)
     np.testing.assert_allclose(
         out.numpy(),
         [
-            [1, 2, np.pi / 2, 4, 5, 9],
-            [11, 12, np.pi / 2, 14, 15, 19],
+            [1, 2, np.sin(np.pi / 2), np.cos(np.pi / 2), 4, 5, 9],
+            [11, 12, np.sin(np.pi / 2), np.cos(np.pi / 2), 14, 15, 19],
         ],
+        atol=1e-6,
     )
 
 
@@ -140,7 +141,7 @@ def test_config_wiring_and_registry_build():
     smith = TENSOR_SMITHS.build({"type": ft_cfg["tensor_smith"]["type"]})
     traj = loader.load("ft", None, _frame_data(), None, tensor_smith=smith)
     traj.to_tensor()
-    assert traj.tensor.shape == (2, 6)
+    assert traj.tensor.shape == (2, 7)
     assert traj.tensor.dtype == torch.float32
 
 
@@ -152,4 +153,4 @@ def test_model_feeder_passes_trajectory_tensor():
 
     assert out["future_trajectory"] is traj.tensor
     assert not isinstance(out["future_trajectory"], FutureTrajectory)
-    assert out["future_trajectory"].shape == (2, 6)
+    assert out["future_trajectory"].shape == (2, 7)

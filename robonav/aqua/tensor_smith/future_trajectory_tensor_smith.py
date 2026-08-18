@@ -17,8 +17,11 @@ class FutureTrajectoryTensorSmith(TensorSmith):
             raise ValueError(
                 "FutureTrajectoryTensorSmith requires linear_velocity and angular_velocity"
             )
-        rot = Rotation.from_matrix(transformable.rotation).as_euler("XYZ", degrees=False)
+        yaw = Rotation.from_matrix(transformable.rotation).as_euler("XYZ", degrees=False)[:, 2:3]
         xy = transformable.translation[:, :2]
         vx_vy = transformable.linear_velocity[:, :2]
         omega = transformable.angular_velocity[:, 2:3]
-        return torch.tensor(np.concatenate([xy, rot[:, 2:3], vx_vy, omega], axis=1), dtype=torch.float32)
+        return torch.tensor(
+            np.concatenate([xy, np.sin(yaw), np.cos(yaw), vx_vy, omega], axis=1),
+            dtype=torch.float32,
+        )
