@@ -187,7 +187,7 @@ model = dict(
     ),
     temporal_fuser=dict(
         type="robonav.TemporalFuser",
-        input_chans=256,
+        feat_chans=256,
         hidden_chans=256,
     ),
     depth_head=dict(
