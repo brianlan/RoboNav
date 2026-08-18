@@ -1,5 +1,8 @@
+import math
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from prefusion.models import BaseModel
 
 from robonav.registry import MODELS
@@ -8,9 +11,7 @@ from robonav.aqua.model.sru import SRU
 __all__ = ["TemporalFuser"]
 
 
-MODELS.register_module()
-
-
+@MODELS.register_module()
 class TemporalFuser(BaseModel):
     def __init__(
         self,
@@ -20,6 +21,9 @@ class TemporalFuser(BaseModel):
         twist_chans=3,
         delta_pose_chans=3,
         goal_chans=6,
+        goal_scales=(10.0, 10.0, math.pi, 1.0, 1.0, 1.0),
+        twist_scales=(1.0, 1.0, 1.0),
+        delta_pose_scales=(0.1, 0.1, 0.1),
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -29,6 +33,9 @@ class TemporalFuser(BaseModel):
         )
         self.temporal_film = TemporalFiLM(hidden_chans, feat_chans)
         self.history_enhanced_compressor = SpatialFeatureCompressor(feat_chans)
+        self.register_buffer("goal_scales", torch.tensor(goal_scales))
+        self.register_buffer("twist_scales", torch.tensor(twist_scales))
+        self.register_buffer("delta_pose_scales", torch.tensor(delta_pose_scales))
         self.state = None
 
     def reset(self):
@@ -36,7 +43,15 @@ class TemporalFuser(BaseModel):
 
     def forward(self, f3g, twist, delta_pose, goal):
         scene_desc = self.vfeat_compressor(f3g)
-        cur_state = torch.cat((scene_desc, twist, delta_pose, goal), dim=1)
+        cur_state = torch.cat(
+            (
+                scene_desc,
+                twist / self.twist_scales,
+                delta_pose / self.delta_pose_scales,
+                goal / self.goal_scales,
+            ),
+            dim=1,
+        )
         _, self.state = self.sru(cur_state.unsqueeze(0), self.state)
         hidden = self.state[0][-1]
         f3g_history_injected = self.temporal_film(f3g, hidden)
@@ -50,10 +65,14 @@ class SpatialFeatureCompressor(nn.Module):
         self.conv1 = nn.Conv2d(num_channels, num_channels, 3, padding=1, stride=2)
         self.conv2 = nn.Conv2d(num_channels, num_channels, 3, padding=1, stride=2)
         self.conv3 = nn.Conv2d(num_channels, num_channels, (6, 8))
+        nn.init.kaiming_normal_(self.conv1.weight, mode="fan_out", nonlinearity="relu")
+        nn.init.zeros_(self.conv1.bias)
+        nn.init.kaiming_normal_(self.conv2.weight, mode="fan_out", nonlinearity="relu")
+        nn.init.zeros_(self.conv2.bias)
 
     def forward(self, feat):
-        feat = self.conv1(feat)
-        feat = self.conv2(feat)
+        feat = F.relu(self.conv1(feat))
+        feat = F.relu(self.conv2(feat))
         feat = self.conv3(feat)
         return feat.squeeze(-1).squeeze(-1)
 
@@ -65,6 +84,10 @@ class TemporalFiLM(nn.Module):
         self.out_chans = out_chans
         self.gamma_linear = nn.Linear(in_chans, out_chans)
         self.beta_linear = nn.Linear(in_chans, out_chans)
+        nn.init.zeros_(self.gamma_linear.weight)
+        nn.init.zeros_(self.gamma_linear.bias)
+        nn.init.zeros_(self.beta_linear.weight)
+        nn.init.zeros_(self.beta_linear.bias)
 
     def forward(self, feat, hidden):
         delta_gamma = self.gamma_linear(hidden)

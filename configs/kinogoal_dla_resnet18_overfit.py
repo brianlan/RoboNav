@@ -217,7 +217,7 @@ env_cfg = dict(
 )
 
 train_cfg = dict(
-    type="StreamingSequenceBatchTrainLoop", max_epochs=num_epochs, val_interval=-1
+    type="robonav.StreamingSequenceBPTTTrainLoop", max_epochs=num_epochs, val_interval=-1
 )  # -1 note don't eval
 val_cfg = dict(type="SequenceBatchValLoop")
 test_cfg = dict(type="SequenceBatchInferLoop")

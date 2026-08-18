@@ -1,4 +1,5 @@
 from prefusion.registry import (
+    LOOPS,
     METRICS,
     MODELS,
     MODEL_FEEDERS,
@@ -12,6 +13,7 @@ import robonav  # noqa: F401
 
 def test_robonav_registrations():
     expected = (
+        (LOOPS, "StreamingSequenceBPTTTrainLoop", "robonav.aqua.runner.loop"),
         (MODELS, "AquaNet", "robonav.aqua.model.aqua"),
         (MODELS, "FrameBatchMerger", "robonav.common.model.data_preprocessor"),
         (MODEL_FEEDERS, "AquaModelFeeder", "robonav.aqua.model_feeder.aqua_model_feeder"),
