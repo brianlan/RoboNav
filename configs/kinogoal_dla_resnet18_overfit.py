@@ -22,7 +22,7 @@ find_unused_parameters = True
 num_gpus = 1
 batch_size = 2
 num_epochs = 2000
-possible_sequence_lengths = [10]
+possible_sequence_lengths = [20]
 
 # Virtual Camera settings
 camera_settings = {

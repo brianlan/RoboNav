@@ -23,12 +23,16 @@ class CameraDepthTensor(TensorSmith):
                 f"got {transformable.depth_mode!r}"
             )
         depth = np.asarray(transformable.img, dtype=np.float32)
-        ego_valid = np.asarray(transformable.ego_mask, dtype=bool)[..., None]
+        if depth.ndim == 3 and depth.shape[2] == 1:
+            depth = depth[..., 0]
+        elif depth.ndim != 2:
+            raise ValueError(f"Camera depth must have shape H,W or H,W,1, got {depth.shape}")
+        ego_valid = np.asarray(transformable.ego_mask, dtype=bool)
         valid_mask = np.isfinite(depth) & (depth > 0) & ego_valid
         normalized = np.where(valid_mask, depth / self.max_depth, 0)
         tensor_dict = dict(
-            img=torch.from_numpy(np.clip(normalized, 0, 1).transpose(2, 0, 1)),
-            valid_mask=torch.from_numpy(valid_mask.transpose(2, 0, 1)),
+            img=torch.from_numpy(np.clip(normalized, 0, 1)[None]),
+            valid_mask=torch.from_numpy(valid_mask[None]),
             ego_mask=torch.tensor(transformable.ego_mask),
         )
         return tensor_dict
