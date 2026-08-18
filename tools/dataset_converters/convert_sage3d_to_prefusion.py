@@ -574,8 +574,6 @@ def _write_navigation_map(
     scale = float(metadata["scale"])
     lower_x, lower_y = map(float, metadata["lower"][:2])
     map_info = manifest.get("map")
-    if not isinstance(map_info, dict):
-        raise ValueError("trajectory manifest lacks map metadata")
     if (
         map_info.get("shape") != [height, width]
         or not np.isclose(float(map_info["scale_m_per_pixel"]), scale)
@@ -583,12 +581,7 @@ def _write_navigation_map(
         or not np.isclose(float(map_info["lower_y"]), lower_y)
     ):
         raise ValueError("manifest map metadata does not match occupancy metadata")
-    if (
-        scale <= 0
-        or width == 0
-        or height == 0
-        or not np.isin(occupancy, (0, 127, 255)).all()
-    ):
+    if scale <= 0 or not np.isin(occupancy, (0, 127, 255)).all():
         raise ValueError("invalid InteriorGS occupancy map")
     with (raw_scene / "structure.json").open(encoding="utf-8") as stream:
         structure = json.load(stream)
@@ -622,18 +615,13 @@ def _write_navigation_map(
     if clearance.dtype.kind != "f":
         raise ValueError("esdf.npy clearance must be floating")
     if (
-        clearance.ndim != 2
-        or clearance.shape != occupancy.shape
+        clearance.shape != occupancy.shape
         or not np.isfinite(clearance).all()
         or (clearance < 0).any()
     ):
         raise ValueError(
             "esdf.npy clearance must be finite, nonnegative, and shape-matched"
         )
-    if traversability.shape != occupancy.shape:
-        raise ValueError("safe_mask.png shape must match occupancy")
-    if not np.isin(traversability, (0, 255)).all():
-        raise ValueError("safe_mask.png must be binary")
     robot_radius = float(manifest["robot_radius_m"])
     safety_margin = float(manifest["safety_margin_m"])
     threshold = float(map_info["required_path_clearance_m"])
