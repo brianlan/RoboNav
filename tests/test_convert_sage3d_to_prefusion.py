@@ -288,6 +288,9 @@ def test_write_episode_gates_visualizations(tmp_path, monkeypatch):
     monkeypatch.setattr(converter, "_initialize_scene", lambda *args: {})
     monkeypatch.setattr(converter, "_write_frame", lambda *args, **kwargs: "frame.pkl")
     monkeypatch.setattr(converter, "_write_scene_index", lambda *args: None)
+    monkeypatch.setattr(
+        converter, "_write_navigation_map", lambda *args, **kwargs: {"shape": [1, 1]}
+    )
     calls: list[str] = []
     monkeypatch.setattr(
         converter, "_ego_pose_visualization", lambda *args: calls.append("ego_pose")
@@ -313,6 +316,8 @@ def test_write_episode_gates_visualizations(tmp_path, monkeypatch):
             4,
             visualize_future,
             visualize_ego,
+            source_scene_dir=tmp_path,
+            manifest={},
         )
         assert (tmp_path / f"sage3d-scene-{episode:06d}").is_dir()
         expected = []

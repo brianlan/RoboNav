@@ -527,7 +527,7 @@ def _initialize_scene(
     temporary: Path,
     scene_name: str,
     cameras: dict[str, dict[str, Any]],
-    navigation_map: dict[str, Any] | None = None,
+    navigation_map: dict[str, Any],
 ) -> dict[str, Any]:
     (temporary / "frame_info_pkl").mkdir()
     for camera_id in cameras:
@@ -543,24 +543,22 @@ def _initialize_scene(
         mask_relative = Path(scene_name) / "self_mask" / f"{camera_id}.png"
         masks[camera_id] = str(mask_relative)
         shutil.copy2(camera["mask_file"], temporary / "self_mask" / f"{camera_id}.png")
-    scene_info = {"camera_mask": masks, "calibration": calibrations}
-    if navigation_map is not None:
-        scene_info["navigation_map_2d"] = navigation_map
-    return scene_info
+    return {
+        "camera_mask": masks,
+        "calibration": calibrations,
+        "navigation_map_2d": navigation_map,
+    }
 
 
-def _write_navigation_map(
-    temporary: Path, scene_name: str, source_scene_dir: Path, manifest: dict[str, Any]
-) -> dict[str, Any]:
-    raw_scene = Path(manifest["scene_dir"])
+def _room_masked_occupancy(
+    raw_scene: Path, map_info: dict[str, Any]
+) -> tuple[np.ndarray, float, float, float]:
     with (raw_scene / "occupancy.json").open(encoding="utf-8") as stream:
         metadata = json.load(stream)
-    occupancy_path = raw_scene / "occupancy.png"
-    occupancy = np.asarray(Image.open(occupancy_path).convert("L"))
+    occupancy = np.asarray(Image.open(raw_scene / "occupancy.png").convert("L"))
     height, width = occupancy.shape
     scale = float(metadata["scale"])
     lower_x, lower_y = map(float, metadata["lower"][:2])
-    map_info = manifest.get("map")
     if (
         map_info.get("shape") != [height, width]
         or not np.isclose(float(map_info["scale_m_per_pixel"]), scale)
@@ -592,8 +590,16 @@ def _write_navigation_map(
         rooms += 1
     if not rooms:
         raise ValueError("structure.json has no valid room polygons")
-    mask = room_mask.astype(bool)
-    occupancy = np.where(mask, occupancy, 127).astype(np.uint8)
+    occupancy = np.where(room_mask.astype(bool), occupancy, 127).astype(np.uint8)
+    return occupancy, scale, lower_x, lower_y
+
+
+def _load_validated_rasters(
+    source_scene_dir: Path,
+    occupancy: np.ndarray,
+    manifest: dict[str, Any],
+    map_info: dict[str, Any],
+) -> tuple[np.ndarray, np.ndarray, float]:
     generated_map = source_scene_dir / "map"
     clearance = np.load(generated_map / "esdf.npy", allow_pickle=False)
     traversability = np.asarray(
@@ -627,12 +633,35 @@ def _write_navigation_map(
         raise ValueError(
             "safe_mask.png does not match room-masked occupancy and clearance threshold"
         )
+    return clearance, traversability, threshold
+
+
+def _write_map_assets(
+    temporary: Path,
+    occupancy: np.ndarray,
+    clearance: np.ndarray,
+    traversability: np.ndarray,
+) -> None:
     (temporary / "map").mkdir()
     Image.fromarray(occupancy).save(temporary / "map" / "occupancy.png")
     np.save(
         temporary / "map" / "clearance.npy", np.asarray(clearance, dtype=np.float32)
     )
     Image.fromarray(traversability).save(temporary / "map" / "traversability.png")
+
+
+def _write_navigation_map(
+    temporary: Path, scene_name: str, source_scene_dir: Path, manifest: dict[str, Any]
+) -> dict[str, Any]:
+    map_info = manifest.get("map")
+    occupancy, scale, lower_x, lower_y = _room_masked_occupancy(
+        Path(manifest["scene_dir"]), map_info
+    )
+    clearance, traversability, threshold = _load_validated_rasters(
+        source_scene_dir, occupancy, manifest, map_info
+    )
+    _write_map_assets(temporary, occupancy, clearance, traversability)
+    height, width = occupancy.shape
     prefix = Path(scene_name) / "map"
     return {
         "occupancy_path": str(prefix / "occupancy.png"),
@@ -647,8 +676,8 @@ def _write_navigation_map(
         ],
         "occupancy_encoding": {"unknown": 127, "free": 255, "occupied": 0},
         "clearance_semantics": "unsigned meters",
-        "traversability_robot_radius_m": robot_radius,
-        "traversability_safety_margin_m": safety_margin,
+        "traversability_robot_radius_m": float(manifest["robot_radius_m"]),
+        "traversability_safety_margin_m": float(manifest["safety_margin_m"]),
         "traversability_threshold_m": threshold,
     }
 
@@ -910,6 +939,70 @@ def _write_future_trajectory_visualizations(
             plt.close(fig)
 
 
+def _ego_frame_traces(
+    trajectory: dict[str, np.ndarray], frame_ids: list[str], frame_index: int
+) -> list[go.Scatter]:
+    ego = _ego_pose(trajectory, frame_index)
+    r = ego["rotation"]
+    t = ego["translation"]
+    yaw = float(trajectory["pose_world"][frame_index, 2])
+    origin_x, origin_y = float(t[0]), float(t[1])
+    body_x = (
+        origin_x + _EGO_AXIS_LENGTH_M * float(r[0, 0]),
+        origin_y + _EGO_AXIS_LENGTH_M * float(r[1, 0]),
+    )
+    body_y = (
+        origin_x + _EGO_AXIS_LENGTH_M * float(r[0, 1]),
+        origin_y + _EGO_AXIS_LENGTH_M * float(r[1, 1]),
+    )
+    velocity = r[:2, :2] @ ego["linear_velocity"][:2]
+    velocity_end = (
+        origin_x + _EGO_VELOCITY_SCALE_S * float(velocity[0]),
+        origin_y + _EGO_VELOCITY_SCALE_S * float(velocity[1]),
+    )
+    angular_z = float(ego["angular_velocity"][2])
+    angular_end = (
+        origin_x + _EGO_AXIS_LENGTH_M * math.cos(yaw + angular_z),
+        origin_y + _EGO_AXIS_LENGTH_M * math.sin(yaw + angular_z),
+    )
+    text = (
+        f"frame_id={frame_ids[frame_index]}<br>"
+        f"t={float(trajectory['time_s'][frame_index]):.3f} s<br>"
+        f"translation=({origin_x:.3f}, {origin_y:.3f}, {float(t[2]):.3f}) m<br>"
+        f"yaw={yaw:.3f} rad<br>"
+        f"linear_velocity_body=("
+        f"{float(ego['linear_velocity'][0]):.3f}, {float(ego['linear_velocity'][1]):.3f}) m/s<br>"
+        f"angular_velocity_z={angular_z:.3f} rad/s"
+    )
+
+    def line(x0, y0, x1, y1, color, name) -> go.Scatter:
+        return go.Scatter(
+            x=[x0, x1],
+            y=[y0, y1],
+            mode="lines",
+            line=dict(color=color, width=3),
+            customdata=[text, text],
+            hovertemplate="%{customdata}<extra></extra>",
+            name=name,
+        )
+
+    return [
+        go.Scatter(
+            x=[origin_x],
+            y=[origin_y],
+            mode="markers",
+            marker=dict(color="black", size=7),
+            customdata=[text],
+            hovertemplate="%{customdata}<extra></extra>",
+            name="origin",
+        ),
+        line(origin_x, origin_y, *body_x, "red", "body_x"),
+        line(origin_x, origin_y, *body_y, "green", "body_y"),
+        line(origin_x, origin_y, *velocity_end, "blue", "velocity"),
+        line(origin_x, origin_y, *angular_end, "purple", "angular_axis"),
+    ]
+
+
 def _ego_pose_visualization(
     temporary: Path, trajectory: dict[str, np.ndarray], frame_ids: list[str]
 ) -> go.Figure:
@@ -917,67 +1010,6 @@ def _ego_pose_visualization(
     pose = trajectory["pose_world"]
     time_s = trajectory["time_s"]
     frame_count = len(frame_ids)
-
-    def per_frame_traces(frame_index: int) -> list[go.Scatter]:
-        ego = _ego_pose(trajectory, frame_index)
-        r = ego["rotation"]
-        t = ego["translation"]
-        yaw = float(pose[frame_index, 2])
-        origin_x, origin_y = float(t[0]), float(t[1])
-        body_x = (
-            origin_x + _EGO_AXIS_LENGTH_M * float(r[0, 0]),
-            origin_y + _EGO_AXIS_LENGTH_M * float(r[1, 0]),
-        )
-        body_y = (
-            origin_x + _EGO_AXIS_LENGTH_M * float(r[0, 1]),
-            origin_y + _EGO_AXIS_LENGTH_M * float(r[1, 1]),
-        )
-        velocity = r[:2, :2] @ ego["linear_velocity"][:2]
-        velocity_end = (
-            origin_x + _EGO_VELOCITY_SCALE_S * float(velocity[0]),
-            origin_y + _EGO_VELOCITY_SCALE_S * float(velocity[1]),
-        )
-        angular_z = float(ego["angular_velocity"][2])
-        angular_end = (
-            origin_x + _EGO_AXIS_LENGTH_M * math.cos(yaw + angular_z),
-            origin_y + _EGO_AXIS_LENGTH_M * math.sin(yaw + angular_z),
-        )
-        text = (
-            f"frame_id={frame_ids[frame_index]}<br>"
-            f"t={float(time_s[frame_index]):.3f} s<br>"
-            f"translation=({origin_x:.3f}, {origin_y:.3f}, {float(t[2]):.3f}) m<br>"
-            f"yaw={yaw:.3f} rad<br>"
-            f"linear_velocity_body=("
-            f"{float(ego['linear_velocity'][0]):.3f}, {float(ego['linear_velocity'][1]):.3f}) m/s<br>"
-            f"angular_velocity_z={angular_z:.3f} rad/s"
-        )
-
-        def line(x0, y0, x1, y1, color, name) -> go.Scatter:
-            return go.Scatter(
-                x=[x0, x1],
-                y=[y0, y1],
-                mode="lines",
-                line=dict(color=color, width=3),
-                customdata=[text, text],
-                hovertemplate="%{customdata}<extra></extra>",
-                name=name,
-            )
-
-        return [
-            go.Scatter(
-                x=[origin_x],
-                y=[origin_y],
-                mode="markers",
-                marker=dict(color="black", size=7),
-                customdata=[text],
-                hovertemplate="%{customdata}<extra></extra>",
-                name="origin",
-            ),
-            line(origin_x, origin_y, *body_x, "red", "body_x"),
-            line(origin_x, origin_y, *body_y, "green", "body_y"),
-            line(origin_x, origin_y, *velocity_end, "blue", "velocity"),
-            line(origin_x, origin_y, *angular_end, "purple", "angular_axis"),
-        ]
 
     trajectory_trace = go.Scatter(
         x=pose[:, 0].tolist(),
@@ -988,11 +1020,13 @@ def _ego_pose_visualization(
         name="trajectory",
     )
 
-    fig = go.Figure(data=[trajectory_trace, *per_frame_traces(0)])
+    fig = go.Figure(
+        data=[trajectory_trace, *_ego_frame_traces(trajectory, frame_ids, 0)]
+    )
     fig.frames = [
         go.Frame(
             name=frame_ids[index],
-            data=per_frame_traces(index),
+            data=_ego_frame_traces(trajectory, frame_ids, index),
             traces=[1, 2, 3, 4, 5],
         )
         for index in range(frame_count)
@@ -1089,16 +1123,14 @@ def _write_episode(
     visualize_future_trajectory: bool,
     visualize_ego_pose: bool,
     *,
-    source_scene_dir: Path | None = None,
-    manifest: dict[str, Any] | None = None,
+    source_scene_dir: Path,
+    manifest: dict[str, Any],
 ) -> None:
     scene_name = f"sage3d-{source_scene_id}-{episode:06d}"
     temporary = Path(tempfile.mkdtemp(prefix=f".{scene_name}.", dir=output_root))
     try:
-        navigation_map = (
-            _write_navigation_map(temporary, scene_name, source_scene_dir, manifest)
-            if source_scene_dir is not None and manifest is not None
-            else None
+        navigation_map = _write_navigation_map(
+            temporary, scene_name, source_scene_dir, manifest
         )
         scene_info = _initialize_scene(temporary, scene_name, cameras, navigation_map)
         terminal_ego_pose = _ego_pose(trajectory, len(frame_ids) - 1)

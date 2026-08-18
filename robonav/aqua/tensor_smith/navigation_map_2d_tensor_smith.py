@@ -28,7 +28,7 @@ class NavigationMap2DTensorSmith(TensorSmith):
                 "output_range spans must be integral multiples of resolution"
             )
 
-    def __call__(self, transformable: NavigationMap2D):
+    def _source_sampling_grid(self, transformable: NavigationMap2D) -> torch.Tensor:
         xmin, ymin, xmax, ymax = self.output_range
         nx, ny = (
             round((xmax - xmin) / self.resolution),
@@ -49,7 +49,7 @@ class NavigationMap2DTensorSmith(TensorSmith):
         ).numpy()
         pixel = body @ np.linalg.inv(transformable.source_pixel_to_body).T
         h, w = transformable.occupancy.shape
-        grid = torch.from_numpy(
+        return torch.from_numpy(
             np.stack(
                 [
                     pixel[..., 0] / (w - 1) * 2 - 1,
@@ -58,6 +58,9 @@ class NavigationMap2DTensorSmith(TensorSmith):
                 -1,
             )
         ).float()[None]
+
+    def __call__(self, transformable: NavigationMap2D):
+        grid = self._source_sampling_grid(transformable)
 
         def sample(array, mode):
             x = torch.from_numpy(np.asarray(array, dtype=np.float32).copy())[None, None]
