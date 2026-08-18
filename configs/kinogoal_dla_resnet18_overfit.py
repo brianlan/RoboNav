@@ -64,6 +64,15 @@ transformables = dict(
         loader=dict(type="robonav.FutureTrajectoryLoader"),
         tensor_smith=dict(type="robonav.FutureTrajectoryTensorSmith"),
     ),
+    navigation_map_2d=dict(
+        type="robonav.NavigationMap2D",
+        loader=dict(type="robonav.NavigationMap2DLoader"),
+        tensor_smith=dict(
+            type="robonav.NavigationMap2DTensorSmith",
+            output_range=(-1, -3, 5, 3),
+            resolution=0.05,
+        ),
+    ),
 )
 
 model_feeder = dict(
@@ -224,7 +233,9 @@ env_cfg = dict(
 )
 
 train_cfg = dict(
-    type="robonav.StreamingSequenceBPTTTrainLoop", max_epochs=num_epochs, val_interval=-1
+    type="robonav.StreamingSequenceBPTTTrainLoop",
+    max_epochs=num_epochs,
+    val_interval=-1,
 )  # -1 note don't eval
 val_cfg = dict(type="SequenceBatchValLoop")
 test_cfg = dict(type="SequenceBatchInferLoop")

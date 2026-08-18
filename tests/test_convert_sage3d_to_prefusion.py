@@ -323,6 +323,52 @@ def test_write_episode_gates_visualizations(tmp_path, monkeypatch):
         assert calls == expected
 
 
+def test_navigation_map_artifacts_are_room_masked_and_metadata_is_exact(tmp_path):
+    converter = _converter()
+    raw = tmp_path / "raw"
+    generated = tmp_path / "generated"
+    raw.mkdir()
+    generated.mkdir()
+    Image.fromarray(
+        np.array([[255, 0, 255, 255], [127, 255, 0, 0]], dtype=np.uint8)
+    ).save(raw / "occupancy.png")
+    (raw / "occupancy.json").write_text('{"scale": 0.5, "lower": [10.0, 20.0]}')
+    (raw / "structure.json").write_text(
+        '{"rooms": [{"profile": [[10.5, 20.0], [11.0, 20.0], '
+        '[11.0, 21.0], [10.5, 21.0]]}]}'
+    )
+    (generated / "map").mkdir()
+    np.save(generated / "map/esdf.npy", np.ones((2, 4), dtype=np.float64))
+    Image.fromarray(
+        np.array([[0, 0, 255, 255], [0, 255, 0, 0]], dtype=np.uint8)
+    ).save(generated / "map/safe_mask.png")
+    manifest = {
+        "scene_dir": str(raw), "robot_radius_m": 0.25, "safety_margin_m": 0.05,
+        "map": {"shape": [2, 4], "scale_m_per_pixel": 0.5, "lower_x": 10.0, "lower_y": 20.0, "robot_radius_m": 0.25, "safety_margin_m": 0.05, "required_path_clearance_m": 0.3, "safe_mask_semantics": "robot_footprint_v1"},
+    }
+    (tmp_path / "out").mkdir()
+    info = converter._write_navigation_map(tmp_path / "out", "scene", generated, manifest)
+    occupancy = np.asarray(Image.open(tmp_path / "out/map/occupancy.png"))
+    assert np.isin(occupancy, (0, 127, 255)).all()
+    assert occupancy[0, 3] == 255 and occupancy[0, 0] == 127
+    assert info["pixel_to_world"] == [[-0.5, 0, 11.75], [0, 0.5, 20.25], [0, 0, 1]]
+    assert np.load(tmp_path / "out/map/clearance.npy").dtype == np.float32
+    assert (tmp_path / "out/map/traversability.png").is_file()
+
+    (tmp_path / "out/frame_info_pkl").mkdir()
+    trajectory = _trajectory()
+    converter._write_frame(
+        tmp_path / "out", "scene", 0, "1000", trajectory,
+        converter._ego_pose(trajectory, 3), {}, {"navigation_map_2d": info}, False, 2,
+    )
+    with (tmp_path / "out/frame_info_pkl/1000.pkl").open("rb") as stream:
+        frame = pickle.load(stream)
+    assert frame["scene_info"]["navigation_map_2d"] == info
+    converter._write_scene_index(tmp_path / "out", "scene", {"1000": "scene/frame_info_pkl/1000.pkl"})
+    with (tmp_path / "out/info.pkl").open("rb") as stream:
+        assert pickle.load(stream)["scene"]["scene_info"] == {}
+
+
 def test_future_trajectory_visualization_writes_one_png_per_frame(tmp_path):
     converter = _converter()
     frame_ids = ["1000", "1001", "1002", "1003"]

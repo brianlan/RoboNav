@@ -22,6 +22,7 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from scipy.spatial.transform import Rotation
+import cv2
 
 _EGO_AXIS_LENGTH_M = 0.2
 _EGO_VELOCITY_SCALE_S = 1.0
@@ -41,7 +42,9 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--scene-ids", nargs="*")
     parser.add_argument("--clone-camera-images", action="store_true", default=False)
     parser.add_argument("--num-future-trajectory-steps", type=_positive_int, default=20)
-    parser.add_argument("--visualize-future-trajectory", action="store_true", default=False)
+    parser.add_argument(
+        "--visualize-future-trajectory", action="store_true", default=False
+    )
     parser.add_argument("--visualize-ego-pose", action="store_true", default=False)
     return parser.parse_args(argv)
 
@@ -81,7 +84,9 @@ def _report_summary(
     skipped: int,
     reasons: Counter[str],
 ) -> None:
-    reason_summary = ", ".join(f"{key}={value}" for key, value in sorted(reasons.items())) or "none"
+    reason_summary = (
+        ", ".join(f"{key}={value}" for key, value in sorted(reasons.items())) or "none"
+    )
     logger.info(
         "summary source_scenes={} successful_episodes={} skipped={} reasons={}",
         source_scene_count,
@@ -95,7 +100,8 @@ def _select_scene_dirs(input_root: Path, scene_ids: list[str] | None) -> list[Pa
     if scene_ids is not None:
         return [input_root / scene_id for scene_id in scene_ids]
     return sorted(
-        (path for path in input_root.iterdir() if path.is_dir()), key=lambda path: path.name
+        (path for path in input_root.iterdir() if path.is_dir()),
+        key=lambda path: path.name,
     )
 
 
@@ -141,7 +147,9 @@ def _convert_scene(
 ) -> tuple[int, int, int]:
     source_scene_id = scene_dir.name
     try:
-        profiles, control_dt, records, validated = _load_scene_inputs(scene_dir)
+        profiles, control_dt, records, validated, manifest = _load_scene_inputs(
+            scene_dir
+        )
     except Exception as error:
         _warning(source_scene_id, None, None, str(error))
         reasons["invalid source scene"] += 1
@@ -164,6 +172,7 @@ def _convert_scene(
                 num_future_trajectory_steps,
                 visualize_future_trajectory,
                 visualize_ego_pose,
+                manifest=manifest,
             )
             if created:
                 succeeded += 1
@@ -175,7 +184,12 @@ def _convert_scene(
         except Exception as error:
             message = str(error)
             camera_match = re.search(r"camera=([^:]+):", message)
-            _warning(source_scene_id, episode, camera_match.group(1) if camera_match else None, message)
+            _warning(
+                source_scene_id,
+                episode,
+                camera_match.group(1) if camera_match else None,
+                message,
+            )
             reasons["invalid episode"] += 1
             skipped += 1
     return succeeded, skipped, existing
@@ -193,6 +207,7 @@ def _convert_episode(
     num_future_trajectory_steps: int,
     visualize_future_trajectory: bool,
     visualize_ego_pose: bool,
+    manifest: dict[str, Any],
 ) -> bool:
     source_scene_id = scene_dir.name
     expected_name, t_output = _validate_episode_record(record, episode, validated)
@@ -217,6 +232,8 @@ def _convert_episode(
         num_future_trajectory_steps,
         visualize_future_trajectory,
         visualize_ego_pose,
+        source_scene_dir=scene_dir,
+        manifest=manifest,
     )
     return True
 
@@ -277,7 +294,9 @@ def _profile_model(profile: dict[str, Any]) -> str:
 def _profile_intrinsic(profile: dict[str, Any]) -> list[float]:
     width, height = _profile_resolution(profile)
     model = _profile_model(profile)
-    coefficients = profile.get("fisheye_coefficients", profile.get("distortion_coefficients"))
+    coefficients = profile.get(
+        "fisheye_coefficients", profile.get("distortion_coefficients")
+    )
     if model == "opencv_fisheye" and (
         not isinstance(coefficients, (list, tuple)) or len(coefficients) != 4
     ):
@@ -292,7 +311,9 @@ def _profile_intrinsic(profile: dict[str, Any]) -> list[float]:
         k1, k2, k3, k4 = map(float, coefficients)
         theta = math.radians(float(profile["horizontal_fov_deg"])) / 2.0
         theta2 = theta * theta
-        theta_d = theta * (1.0 + k1 * theta2 + k2 * theta2**2 + k3 * theta2**3 + k4 * theta2**4)
+        theta_d = theta * (
+            1.0 + k1 * theta2 + k2 * theta2**2 + k3 * theta2**3 + k4 * theta2**4
+        )
         focal = (width / 2.0) / theta_d
     if isinstance(focal, (list, tuple)):
         fx, fy = map(float, focal)
@@ -301,7 +322,9 @@ def _profile_intrinsic(profile: dict[str, Any]) -> list[float]:
     else:
         raise ValueError("camera profile lacks focal length")
     if fx <= 0 or fy <= 0 or not np.isclose(fx, fy):
-        raise ValueError("camera profile must have finite positive square-pixel focal length")
+        raise ValueError(
+            "camera profile must have finite positive square-pixel focal length"
+        )
     intrinsic = [width / 2.0, height / 2.0, fx, fy]
     if model == "opencv_fisheye":
         intrinsic.extend(float(value) for value in coefficients)
@@ -316,16 +339,24 @@ def _profile_extrinsic(profile: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]
         raise ValueError("camera profile lacks extrinsic")
     translation = np.asarray(extrinsic.get("translation_body_m"), dtype=np.float32)
     rpy = np.asarray(extrinsic.get("rotation_rpy_deg"), dtype=np.float32)
-    if translation.shape != (3,) or rpy.shape != (3,) or not np.isfinite([translation, rpy]).all():
+    if (
+        translation.shape != (3,)
+        or rpy.shape != (3,)
+        or not np.isfinite([translation, rpy]).all()
+    ):
         raise ValueError("camera extrinsic must contain finite xyz translation and RPY")
-    rotation = Rotation.from_euler("xyz", rpy, degrees=True).as_matrix().astype(np.float32)
+    rotation = (
+        Rotation.from_euler("xyz", rpy, degrees=True).as_matrix().astype(np.float32)
+    )
     return rotation, translation
 
 
 def _calibration(profile: dict[str, Any]) -> dict[str, Any]:
     rotation, translation = _profile_extrinsic(profile)
     return {
-        "camera_type": "PerspectiveCamera" if _profile_model(profile) == "pinhole" else "FisheyeCamera",
+        "camera_type": "PerspectiveCamera"
+        if _profile_model(profile) == "pinhole"
+        else "FisheyeCamera",
         "intrinsic": np.asarray(_profile_intrinsic(profile), dtype=np.float32),
         "extrinsic": (rotation, translation),
     }
@@ -346,7 +377,11 @@ def _validate_summary(
         raise ValueError(f"{mode} summary render_mode mismatch")
     model = _profile_model(profile)
     _same(summary.get("camera_model"), model, f"{mode} camera model")
-    _same(summary.get("resolution"), list(_profile_resolution(profile)), f"{mode} resolution")
+    _same(
+        summary.get("resolution"),
+        list(_profile_resolution(profile)),
+        f"{mode} resolution",
+    )
     intrinsic = _profile_intrinsic(profile)
     _same(summary.get("principal_point"), intrinsic[:2], f"{mode} principal point")
     _same(summary.get("focal_length_pixels"), intrinsic[2], f"{mode} focal length")
@@ -363,7 +398,11 @@ def _validate_summary(
         f"{mode} extrinsic rotation",
     )
     if model == "opencv_fisheye":
-        _same(summary.get("fisheye_coefficients"), intrinsic[4:], f"{mode} fisheye coefficients")
+        _same(
+            summary.get("fisheye_coefficients"),
+            intrinsic[4:],
+            f"{mode} fisheye coefficients",
+        )
     if mode == "depth":
         if summary.get("depth_type") != "distance_to_camera":
             raise ValueError(f"{mode} summary depth_type is not distance_to_camera")
@@ -396,8 +435,12 @@ def _metadata_episode_records(
     return records, indexed
 
 
-def _frame_files(directory: Path, episode: int, suffix: str, frame_count: int) -> list[Path]:
-    pattern = re.compile(rf"^episode_{episode:06d}_(\d+)\.{re.escape(suffix)}$", re.IGNORECASE)
+def _frame_files(
+    directory: Path, episode: int, suffix: str, frame_count: int
+) -> list[Path]:
+    pattern = re.compile(
+        rf"^episode_{episode:06d}_(\d+)\.{re.escape(suffix)}$", re.IGNORECASE
+    )
     indexed: dict[int, Path] = {}
     for path in directory.iterdir():
         match = pattern.fullmatch(path.name)
@@ -411,7 +454,9 @@ def _frame_files(directory: Path, episode: int, suffix: str, frame_count: int) -
     if actual != expected:
         missing = sorted(expected - actual)
         extra = sorted(actual - expected)
-        raise ValueError(f"{suffix} frame indices mismatch; missing={missing} extra={extra}")
+        raise ValueError(
+            f"{suffix} frame indices mismatch; missing={missing} extra={extra}"
+        )
     return [indexed[index] for index in range(frame_count)]
 
 
@@ -420,12 +465,18 @@ def _validate_image(path: Path, width: int, height: int, *, depth: bool) -> None
         array = np.asarray(image)
     if depth:
         if array.shape != (height, width) or array.dtype != np.uint16:
-            raise ValueError(f"depth must be 2D uint16, got shape={array.shape} dtype={array.dtype}")
+            raise ValueError(
+                f"depth must be 2D uint16, got shape={array.shape} dtype={array.dtype}"
+            )
     elif array.shape != (height, width, 3) or array.dtype != np.uint8:
-        raise ValueError(f"RGB must be HxWx3 uint8, got shape={array.shape} dtype={array.dtype}")
+        raise ValueError(
+            f"RGB must be HxWx3 uint8, got shape={array.shape} dtype={array.dtype}"
+        )
 
 
-def _trajectory(npz_path: Path, control_dt: float, t_output: float) -> dict[str, np.ndarray]:
+def _trajectory(
+    npz_path: Path, control_dt: float, t_output: float
+) -> dict[str, np.ndarray]:
     with np.load(npz_path, allow_pickle=False) as archive:
         required = ("time_s", "pose_world", "velocity_world_mps", "yaw_rate_radps")
         arrays = {key: np.asarray(archive[key]) for key in required}
@@ -435,7 +486,9 @@ def _trajectory(npz_path: Path, control_dt: float, t_output: float) -> dict[str,
     frame_count = len(time_s)
     if not np.isclose(time_s[0], 0.0, atol=1e-8):
         raise ValueError("time_s must start at zero")
-    if frame_count > 1 and not np.allclose(np.diff(time_s), control_dt, rtol=1e-6, atol=1e-8):
+    if frame_count > 1 and not np.allclose(
+        np.diff(time_s), control_dt, rtol=1e-6, atol=1e-8
+    ):
         raise ValueError("time_s does not have the configured fixed interval")
     if not np.isclose(time_s[-1], t_output, rtol=1e-6, atol=1e-8):
         raise ValueError("time_s endpoint does not match candidate T_output")
@@ -454,10 +507,14 @@ def _trajectory(npz_path: Path, control_dt: float, t_output: float) -> dict[str,
 def _frame_ids(npz_path: Path, frame_count: int, control_dt: float) -> list[str]:
     initial_ms = npz_path.stat().st_mtime_ns // 1_000_000
     step_ms = control_dt * 1000.0
-    ids = [str(int(round(initial_ms + index * step_ms))) for index in range(frame_count)]
+    ids = [
+        str(int(round(initial_ms + index * step_ms))) for index in range(frame_count)
+    ]
     integers = list(map(int, ids))
     if any(b <= a for a, b in zip(integers, integers[1:])):
-        raise ValueError("control_dt_s does not produce unique strictly increasing millisecond frame IDs")
+        raise ValueError(
+            "control_dt_s does not produce unique strictly increasing millisecond frame IDs"
+        )
     return ids
 
 
@@ -483,6 +540,7 @@ def _initialize_scene(
     temporary: Path,
     scene_name: str,
     cameras: dict[str, dict[str, Any]],
+    navigation_map: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     (temporary / "frame_info_pkl").mkdir()
     for camera_id in cameras:
@@ -490,13 +548,134 @@ def _initialize_scene(
         (temporary / "camera_image_depth" / camera_id).mkdir(parents=True)
     (temporary / "self_mask").mkdir()
 
-    calibrations = {camera_id: camera["calibration"] for camera_id, camera in cameras.items()}
+    calibrations = {
+        camera_id: camera["calibration"] for camera_id, camera in cameras.items()
+    }
     masks = {}
     for camera_id, camera in cameras.items():
         mask_relative = Path(scene_name) / "self_mask" / f"{camera_id}.png"
         masks[camera_id] = str(mask_relative)
         shutil.copy2(camera["mask_file"], temporary / "self_mask" / f"{camera_id}.png")
-    return {"camera_mask": masks, "calibration": calibrations}
+    scene_info = {"camera_mask": masks, "calibration": calibrations}
+    if navigation_map is not None:
+        scene_info["navigation_map_2d"] = navigation_map
+    return scene_info
+
+
+def _write_navigation_map(
+    temporary: Path, scene_name: str, source_scene_dir: Path, manifest: dict[str, Any]
+) -> dict[str, Any]:
+    raw_scene = Path(manifest["scene_dir"])
+    with (raw_scene / "occupancy.json").open(encoding="utf-8") as stream:
+        metadata = json.load(stream)
+    occupancy_path = raw_scene / "occupancy.png"
+    occupancy = np.asarray(Image.open(occupancy_path).convert("L"))
+    height, width = occupancy.shape
+    scale = float(metadata["scale"])
+    lower_x, lower_y = map(float, metadata["lower"][:2])
+    map_info = manifest.get("map")
+    if not isinstance(map_info, dict):
+        raise ValueError("trajectory manifest lacks map metadata")
+    if (
+        map_info.get("shape") != [height, width]
+        or not np.isclose(float(map_info["scale_m_per_pixel"]), scale)
+        or not np.isclose(float(map_info["lower_x"]), lower_x)
+        or not np.isclose(float(map_info["lower_y"]), lower_y)
+    ):
+        raise ValueError("manifest map metadata does not match occupancy metadata")
+    if (
+        scale <= 0
+        or width == 0
+        or height == 0
+        or not np.isin(occupancy, (0, 127, 255)).all()
+    ):
+        raise ValueError("invalid InteriorGS occupancy map")
+    with (raw_scene / "structure.json").open(encoding="utf-8") as stream:
+        structure = json.load(stream)
+    room_mask = np.zeros((height, width), dtype=np.uint8)
+    rooms = 0
+    for room in structure.get("rooms", []):
+        profile = room.get("profile", [])
+        if len(profile) < 3:
+            continue
+        pixels = np.asarray(
+            [
+                [
+                    width - 1 - int(round((float(x) - lower_x) / scale - 0.5)),
+                    int(round((float(y) - lower_y) / scale - 0.5)),
+                ]
+                for x, y in profile
+            ],
+            dtype=np.int32,
+        )
+        cv2.fillPoly(room_mask, [pixels], 1)
+        rooms += 1
+    if not rooms:
+        raise ValueError("structure.json has no valid room polygons")
+    mask = room_mask.astype(bool)
+    occupancy = np.where(mask, occupancy, 127).astype(np.uint8)
+    generated_map = source_scene_dir / "map"
+    clearance = np.load(generated_map / "esdf.npy", allow_pickle=False)
+    traversability = np.asarray(
+        Image.open(generated_map / "safe_mask.png").convert("L")
+    )
+    if clearance.dtype.kind != "f":
+        raise ValueError("esdf.npy clearance must be floating")
+    if (
+        clearance.ndim != 2
+        or clearance.shape != occupancy.shape
+        or not np.isfinite(clearance).all()
+        or (clearance < 0).any()
+    ):
+        raise ValueError(
+            "esdf.npy clearance must be finite, nonnegative, and shape-matched"
+        )
+    if traversability.shape != occupancy.shape:
+        raise ValueError("safe_mask.png shape must match occupancy")
+    if not np.isin(traversability, (0, 255)).all():
+        raise ValueError("safe_mask.png must be binary")
+    robot_radius = float(manifest["robot_radius_m"])
+    safety_margin = float(manifest["safety_margin_m"])
+    threshold = float(map_info["required_path_clearance_m"])
+    if map_info.get("safe_mask_semantics") != "robot_footprint_v1":
+        raise ValueError("manifest map safe_mask_semantics must be robot_footprint_v1")
+    if (
+        not np.isclose(float(map_info["robot_radius_m"]), robot_radius)
+        or not np.isclose(float(map_info["safety_margin_m"]), safety_margin)
+        or not np.isclose(threshold, robot_radius + safety_margin)
+    ):
+        raise ValueError("manifest map radius, margin, or clearance threshold mismatch")
+    expected_traversability = ((occupancy == 255) & (clearance >= threshold)).astype(
+        np.uint8
+    ) * 255
+    if not np.array_equal(traversability, expected_traversability):
+        raise ValueError(
+            "safe_mask.png does not match room-masked occupancy and clearance threshold"
+        )
+    (temporary / "map").mkdir()
+    Image.fromarray(occupancy).save(temporary / "map" / "occupancy.png")
+    np.save(
+        temporary / "map" / "clearance.npy", np.asarray(clearance, dtype=np.float32)
+    )
+    Image.fromarray(traversability).save(temporary / "map" / "traversability.png")
+    prefix = Path(scene_name) / "map"
+    return {
+        "occupancy_path": str(prefix / "occupancy.png"),
+        "clearance_path": str(prefix / "clearance.npy"),
+        "traversability_path": str(prefix / "traversability.png"),
+        "shape": [height, width],
+        "resolution": scale,
+        "pixel_to_world": [
+            [-scale, 0, lower_x + (width - 0.5) * scale],
+            [0, scale, lower_y + 0.5 * scale],
+            [0, 0, 1],
+        ],
+        "occupancy_encoding": {"unknown": 127, "free": 255, "occupied": 0},
+        "clearance_semantics": "unsigned meters",
+        "traversability_robot_radius_m": robot_radius,
+        "traversability_safety_margin_m": safety_margin,
+        "traversability_threshold_m": threshold,
+    }
 
 
 def _write_frame_images(
@@ -513,24 +692,35 @@ def _write_frame_images(
         rgb_name = f"{frame_id}.jpg"
         depth_name = f"{frame_id}.npz"
         rgb_relative = Path(scene_name) / "camera_image" / camera_id / rgb_name
-        depth_relative = Path(scene_name) / "camera_image_depth" / camera_id / depth_name
+        depth_relative = (
+            Path(scene_name) / "camera_image_depth" / camera_id / depth_name
+        )
         _copy_or_link(
             camera["rgb_files"][frame_index],
             temporary / "camera_image" / camera_id / rgb_name,
             clone_images,
         )
         with Image.open(camera["depth_files"][frame_index]) as image:
-            depth = np.asarray(image, dtype=np.uint16).astype(np.float32) / camera["depth_scale"]
-        np.savez_compressed(temporary / "camera_image_depth" / camera_id / depth_name, depth=depth)
+            depth = (
+                np.asarray(image, dtype=np.uint16).astype(np.float32)
+                / camera["depth_scale"]
+            )
+        np.savez_compressed(
+            temporary / "camera_image_depth" / camera_id / depth_name, depth=depth
+        )
         camera_images[camera_id] = str(rgb_relative)
         depth_images[camera_id] = str(depth_relative)
     return camera_images, depth_images
 
 
-def _ego_pose(trajectory: dict[str, np.ndarray], frame_index: int) -> dict[str, np.ndarray]:
+def _ego_pose(
+    trajectory: dict[str, np.ndarray], frame_index: int
+) -> dict[str, np.ndarray]:
     x, y, yaw = trajectory["pose_world"][frame_index]
     c, s = math.cos(float(yaw)), math.sin(float(yaw))
-    rotation = np.asarray([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+    rotation = np.asarray(
+        [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32
+    )
     velocity_world = np.asarray(
         [*trajectory["velocity_world_mps"][frame_index], 0.0], dtype=np.float32
     )
@@ -569,7 +759,9 @@ def _future_trajectory(
     terminal_index = len(trajectory["pose_world"]) - 1
     ego_pose = _ego_pose(trajectory, frame_index)
     trajectory_steps = [
-        _goal(ego_pose, _ego_pose(trajectory, min(frame_index + offset, terminal_index)))
+        _goal(
+            ego_pose, _ego_pose(trajectory, min(frame_index + offset, terminal_index))
+        )
         for offset in range(1, num_future_trajectory_steps + 1)
     ]
     fields = ("rotation", "translation", "linear_velocity", "angular_velocity")
@@ -611,7 +803,9 @@ def _write_frame(
     return str(Path(scene_name) / "frame_info_pkl" / frame_name)
 
 
-def _write_scene_index(temporary: Path, scene_name: str, frame_index: dict[str, str]) -> None:
+def _write_scene_index(
+    temporary: Path, scene_name: str, frame_index: dict[str, str]
+) -> None:
     info = {scene_name: {"scene_info": {}, "frame_info": frame_index}}
     with (temporary / "info.pkl").open("wb") as stream:
         pickle.dump(info, stream, protocol=pickle.HIGHEST_PROTOCOL)
@@ -735,7 +929,9 @@ def _write_future_trajectory_visualizations(
             ego_pose, _goal(ego_pose, terminal_ego_pose), future_trajectory
         )
         try:
-            fig.savefig(temporary / "future_trajectory_vis" / f"{frame_id}.png", dpi=150)
+            fig.savefig(
+                temporary / "future_trajectory_vis" / f"{frame_id}.png", dpi=150
+            )
         finally:
             plt.close(fig)
 
@@ -833,9 +1029,7 @@ def _ego_pose_visualization(
 
     xmin, xmax = float(np.min(pose[:, 0])), float(np.max(pose[:, 0]))
     ymin, ymax = float(np.min(pose[:, 1])), float(np.max(pose[:, 1]))
-    max_speed = float(
-        np.max(np.linalg.norm(trajectory["velocity_world_mps"], axis=1))
-    )
+    max_speed = float(np.max(np.linalg.norm(trajectory["velocity_world_mps"], axis=1)))
     margin = max(_EGO_AXIS_LENGTH_M, _EGO_VELOCITY_SCALE_S * max_speed)
     span = max(xmax - xmin, ymax - ymin) / 2.0 + margin
     xmid, ymid = (xmin + xmax) / 2.0, (ymin + ymax) / 2.0
@@ -874,7 +1068,9 @@ def _ego_pose_visualization(
                         method="animate",
                         args=[
                             [None],
-                            dict(frame=dict(duration=0, redraw=False), mode="immediate"),
+                            dict(
+                                frame=dict(duration=0, redraw=False), mode="immediate"
+                            ),
                         ],
                     ),
                 ],
@@ -921,11 +1117,19 @@ def _write_episode(
     num_future_trajectory_steps: int,
     visualize_future_trajectory: bool,
     visualize_ego_pose: bool,
+    *,
+    source_scene_dir: Path | None = None,
+    manifest: dict[str, Any] | None = None,
 ) -> str:
     scene_name = f"sage3d-{source_scene_id}-{episode:06d}"
     temporary = Path(tempfile.mkdtemp(prefix=f".{scene_name}.", dir=output_root))
     try:
-        scene_info = _initialize_scene(temporary, scene_name, cameras)
+        navigation_map = (
+            _write_navigation_map(temporary, scene_name, source_scene_dir, manifest)
+            if source_scene_dir is not None and manifest is not None
+            else None
+        )
+        scene_info = _initialize_scene(temporary, scene_name, cameras, navigation_map)
         terminal_ego_pose = _ego_pose(trajectory, len(frame_ids) - 1)
         frame_index = {
             frame_id: _write_frame(
@@ -970,7 +1174,9 @@ def _load_camera(
         _validate_summary(rgb_summary, profile, source_scene_id, camera_id, "rgb")
         _validate_summary(depth_summary, profile, source_scene_id, camera_id, "depth")
         width, height = _profile_resolution(profile)
-        rgb_files = _frame_files(camera_dir / "observation.images.rgb", episode, "jpg", frame_count)
+        rgb_files = _frame_files(
+            camera_dir / "observation.images.rgb", episode, "jpg", frame_count
+        )
         depth_files = _frame_files(
             camera_dir / "observation.images.depth", episode, "png", frame_count
         )
@@ -1005,7 +1211,9 @@ def _load_cameras(
         if path.is_dir() and path.name in profiles
     ]
     if not camera_dirs:
-        raise ValueError("no rendered camera matches trajectory manifest camera_profiles")
+        raise ValueError(
+            "no rendered camera matches trajectory manifest camera_profiles"
+        )
     return {
         camera_dir.name: _load_camera(
             camera_dir,
@@ -1020,11 +1228,15 @@ def _load_cameras(
 
 def _load_scene_inputs(
     scene_dir: Path,
-) -> tuple[dict[str, Any], float, list[Any], dict[int, dict[str, Any]]]:
+) -> tuple[dict[str, Any], float, list[Any], dict[int, dict[str, Any]], dict[str, Any]]:
     source_scene_id = scene_dir.name
     manifest = _load_json(scene_dir / "trajectories" / "trajectory_manifest.json")
-    candidates = _load_json(scene_dir / "optimized_trajectories" / "candidate_metadata.json")
-    validation = _load_json(scene_dir / "optimized_trajectories" / "validation_metadata.json")
+    candidates = _load_json(
+        scene_dir / "optimized_trajectories" / "candidate_metadata.json"
+    )
+    validation = _load_json(
+        scene_dir / "optimized_trajectories" / "validation_metadata.json"
+    )
     for name, metadata in (
         ("manifest", manifest),
         ("candidate", candidates),
@@ -1040,7 +1252,7 @@ def _load_scene_inputs(
         raise ValueError("effective_config.control_dt_s must be positive")
     records, _ = _metadata_episode_records(candidates, "candidate", require_list=True)
     _, validated = _metadata_episode_records(validation, "validation")
-    return profiles, control_dt, records, validated
+    return profiles, control_dt, records, validated, manifest
 
 
 def _validate_episode_record(

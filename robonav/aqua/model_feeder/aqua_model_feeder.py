@@ -3,7 +3,7 @@ from scipy.spatial.transform import Rotation
 from prefusion.dataset.model_feeder import BaseModelFeeder
 from prefusion.dataset.transform import CameraImageSet, CameraDepthSet, EgoPoseSet
 
-from robonav.aqua.transformable import FutureTrajectory, Goal
+from robonav.aqua.transformable import FutureTrajectory, Goal, NavigationMap2D
 from robonav.registry import MODEL_FEEDERS
 from robonav.common.util import rt2mat
 
@@ -97,6 +97,9 @@ class AquaModelFeeder(BaseModelFeeder):
                 continue
             if isinstance(trnsfmb, FutureTrajectory):
                 out["future_trajectory"] = trnsfmb.tensor
+                continue
+            if isinstance(trnsfmb, NavigationMap2D):
+                out.update(trnsfmb.tensor)
                 continue
         return out
 

@@ -31,12 +31,15 @@ def test_robonav_registrations():
             "FutureTrajectory",
             "robonav.aqua.transformable.future_trajectory",
         ),
+        (TRANSFORMABLES, "NavigationMap2D", "robonav.aqua.transformable.navigation_map_2d"),
         (TRANSFORMABLE_LOADERS, "GoalLoader", "robonav.aqua.transformable_loader.goal_loader"),
         (
             TRANSFORMABLE_LOADERS,
             "FutureTrajectoryLoader",
             "robonav.aqua.transformable_loader.future_trajectory_loader",
         ),
+        (TRANSFORMABLE_LOADERS, "NavigationMap2DLoader", "robonav.aqua.transformable_loader.navigation_map_2d_loader"),
+        (TENSOR_SMITHS, "NavigationMap2DTensorSmith", "robonav.aqua.tensor_smith.navigation_map_2d_tensor_smith"),
         (METRICS, "DummyAccuracyMetric", "robonav.common.metric"),
     )
 
