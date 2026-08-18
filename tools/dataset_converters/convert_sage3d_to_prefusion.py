@@ -40,12 +40,10 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--input-scene-root", type=Path, required=True)
     parser.add_argument("--output-scene-root", type=Path, required=True)
     parser.add_argument("--scene-ids", nargs="*")
-    parser.add_argument("--clone-camera-images", action="store_true", default=False)
+    parser.add_argument("--clone-camera-images", action="store_true")
     parser.add_argument("--num-future-trajectory-steps", type=_positive_int, default=20)
-    parser.add_argument(
-        "--visualize-future-trajectory", action="store_true", default=False
-    )
-    parser.add_argument("--visualize-ego-pose", action="store_true", default=False)
+    parser.add_argument("--visualize-future-trajectory", action="store_true")
+    parser.add_argument("--visualize-ego-pose", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -99,10 +97,7 @@ def _report_summary(
 def _select_scene_dirs(input_root: Path, scene_ids: list[str] | None) -> list[Path]:
     if scene_ids is not None:
         return [input_root / scene_id for scene_id in scene_ids]
-    return sorted(
-        (path for path in input_root.iterdir() if path.is_dir()),
-        key=lambda path: path.name,
-    )
+    return sorted(path for path in input_root.iterdir() if path.is_dir())
 
 
 def _convert_scenes(
@@ -507,15 +502,14 @@ def _trajectory(
 def _frame_ids(npz_path: Path, frame_count: int, control_dt: float) -> list[str]:
     initial_ms = npz_path.stat().st_mtime_ns // 1_000_000
     step_ms = control_dt * 1000.0
-    ids = [
-        str(int(round(initial_ms + index * step_ms))) for index in range(frame_count)
+    integers = [
+        int(round(initial_ms + index * step_ms)) for index in range(frame_count)
     ]
-    integers = list(map(int, ids))
     if any(b <= a for a, b in zip(integers, integers[1:])):
         raise ValueError(
             "control_dt_s does not produce unique strictly increasing millisecond frame IDs"
         )
-    return ids
+    return [str(value) for value in integers]
 
 
 def _validate_mask(path: Path, width: int, height: int) -> None:
@@ -527,13 +521,6 @@ def _validate_mask(path: Path, width: int, height: int) -> None:
         raise ValueError(f"mask resolution {array.shape[::-1]} != {(width, height)}")
     if not ((array == 0) | (array == 255)).all():
         raise ValueError("mask must contain only 0 and 255")
-
-
-def _copy_or_link(source: Path, destination: Path, clone: bool) -> None:
-    if clone:
-        shutil.copy2(source, destination)
-    else:
-        destination.symlink_to(source.resolve())
 
 
 def _initialize_scene(
@@ -683,11 +670,12 @@ def _write_frame_images(
         depth_relative = (
             Path(scene_name) / "camera_image_depth" / camera_id / depth_name
         )
-        _copy_or_link(
-            camera["rgb_files"][frame_index],
-            temporary / "camera_image" / camera_id / rgb_name,
-            clone_images,
-        )
+        rgb_destination = temporary / "camera_image" / camera_id / rgb_name
+        rgb_source = camera["rgb_files"][frame_index]
+        if clone_images:
+            shutil.copy2(rgb_source, rgb_destination)
+        else:
+            rgb_destination.symlink_to(rgb_source.resolve())
         with Image.open(camera["depth_files"][frame_index]) as image:
             depth = (
                 np.asarray(image, dtype=np.uint16).astype(np.float32)
@@ -721,8 +709,6 @@ def _ego_pose(
         "linear_velocity": rotation.T @ velocity_world,
         "angular_velocity": rotation.T @ angular_world,
     }
-    if not all(np.isfinite(value).all() for value in ego_pose.values()):
-        raise ValueError(f"frame {frame_index} ego pose contains non-finite values")
     return ego_pose
 
 
@@ -927,10 +913,7 @@ def _write_future_trajectory_visualizations(
 def _ego_pose_visualization(
     temporary: Path, trajectory: dict[str, np.ndarray], frame_ids: list[str]
 ) -> go.Figure:
-    """Write a self-contained interactive ego-pose animation into temporary.
-
-    Returns the built figure for inspection.
-    """
+    """Write a self-contained interactive ego-pose animation into temporary."""
     pose = trajectory["pose_world"]
     time_s = trajectory["time_s"]
     frame_count = len(frame_ids)
@@ -1108,7 +1091,7 @@ def _write_episode(
     *,
     source_scene_dir: Path | None = None,
     manifest: dict[str, Any] | None = None,
-) -> str:
+) -> None:
     scene_name = f"sage3d-{source_scene_id}-{episode:06d}"
     temporary = Path(tempfile.mkdtemp(prefix=f".{scene_name}.", dir=output_root))
     try:
@@ -1145,7 +1128,6 @@ def _write_episode(
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
         raise
-    return scene_name
 
 
 def _load_camera(

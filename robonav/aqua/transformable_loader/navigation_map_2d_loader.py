@@ -16,13 +16,12 @@ class NavigationMap2DLoader(TransformableLoader):
         info = frame_data["scene_info"]["navigation_map_2d"]
         root = Path(self.data_root)
 
-        def path(key):
-            return root / info[key]
-
-        occupancy = np.asarray(Image.open(path("occupancy_path")).convert("L"))
-        clearance = np.load(path("clearance_path"), allow_pickle=False)
+        occupancy = np.asarray(
+            Image.open(root / info["occupancy_path"]).convert("L")
+        )
+        clearance = np.load(root / info["clearance_path"], allow_pickle=False)
         traversability = np.asarray(
-            Image.open(path("traversability_path")).convert("L")
+            Image.open(root / info["traversability_path"]).convert("L")
         )
         if not np.isin(traversability, (0, 255)).all():
             raise ValueError("traversability raster must contain only 0 and 255")
