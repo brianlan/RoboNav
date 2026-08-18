@@ -70,6 +70,9 @@ class AquaNet(BaseModel):
         twist=None,
         goal=None,
         future_trajectory=None,
+        occupancy=None,
+        clearance=None,
+        traversability=None,
         mode="loss",
         **kwargs,
     ):
@@ -78,6 +81,9 @@ class AquaNet(BaseModel):
         goal = torch.row_stack(goal)
         twist = torch.row_stack(twist)
         delta_poses = torch.row_stack(delta_poses)
+        occupancy = torch.row_stack(occupancy)
+        clearance = torch.row_stack(clearance)
+        traversability = torch.row_stack(traversability)
 
         f1, f2, f3, f4 = self.backbone(camera_images, pe)
         f3g = self.feature_modulation(f4, f3, twist, goal)
