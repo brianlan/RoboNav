@@ -25,3 +25,7 @@ class FutureTrajectoryTensorSmith(TensorSmith):
             np.concatenate([xy, np.sin(yaw), np.cos(yaw), vx_vy, omega], axis=1),
             dtype=torch.float32,
         )
+
+    def reverse(self, tensor: torch.Tensor) -> torch.Tensor:
+        yaw = torch.atan2(tensor[..., 2:3], tensor[..., 3:4])
+        return torch.cat([tensor[..., :2], yaw, tensor[..., 4:]], dim=-1)

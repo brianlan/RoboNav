@@ -123,6 +123,31 @@ def test_tensor_smith_values_dtypes_shapes():
     )
 
 
+def test_reverse_recovers_yaw_and_layout():
+    smith = FutureTrajectoryTensorSmith()
+    yaw = torch.tensor([-3 * np.pi / 4, -np.pi / 2, np.pi / 3, np.pi])
+    wrapped = (yaw.numpy() + np.pi) % (2 * np.pi) - np.pi
+    forward = torch.stack(
+        [torch.ones(4), torch.full((4,), 2.0), torch.sin(yaw), torch.cos(yaw),
+         torch.full((4,), 4.0), torch.full((4,), 5.0), torch.full((4,), 6.0)],
+        dim=-1,
+    )
+    assert forward.shape == (4, 7)
+
+    out = smith.reverse(forward)
+    assert out.shape == (4, 6)
+    assert out.dtype == forward.dtype
+    np.testing.assert_allclose(
+        out.numpy(),
+        [[1, 2, w, 4, 5, 6] for w in wrapped],
+        atol=1e-6,
+    )
+
+    batched = smith.reverse(forward.unsqueeze(0))
+    assert batched.shape == (1, 4, 6)
+    np.testing.assert_allclose(batched.numpy()[0], out.numpy(), atol=1e-6)
+
+
 def test_tensor_smith_requires_velocities():
     with pytest.raises(ValueError, match="requires linear_velocity and angular_velocity"):
         FutureTrajectoryTensorSmith()(_load(_frame_data(with_velocities=False)))
