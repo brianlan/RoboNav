@@ -21,7 +21,7 @@ find_unused_parameters = True
 
 num_gpus = 1
 batch_size = 2
-num_epochs = 2000
+num_epochs = 500
 possible_sequence_lengths = [20]
 
 # Single source for the depth range: used by both CameraDepthTensor
@@ -96,7 +96,7 @@ train_dataset = dict(
         dict(type="BGR2RGB"),
         dict(type="RenderVirtualCamera", camera_settings=camera_settings),
         # dict(type="RandomRenderExtrinsic", angles=[2, 2, 2]),
-        # dict(type="RandomTranslateSpace", translation=(1, 1, 0)),
+        # dict(type="RandomTranslateSpace", translation=(0.1, 0.1, 0)),
         # dict(type="RandomRotateSpace", angles=(0, 0, 90), prob_inverse_cameras_rotation=0),
         # dict(type="RandomMirrorSpace"),
         # dict(type="RandomImageISP", prob=0.1),
@@ -161,7 +161,7 @@ train_dataloader = dict(
 
 val_dataloader = dict(
     num_workers=0,
-    sampler=dict(type="DefaultSampler"),
+    sampler=dict(type="DefaultSampler", shuffle=False, round_up=True),
     collate_fn=dict(type="collate_dict"),
     dataset=val_dataset,
     persistent_workers=False,
@@ -254,7 +254,9 @@ model = dict(
     ),
 )
 
-val_evaluator = dict(type="robonav.DummyAccuracyMetric")
+val_evaluator = dict(
+    type="robonav.AquaTrajectoryMetric", delta_t=0.1, prefix="trajectory"
+)
 test_evaluator = dict(type="robonav.DummyAccuracyMetric")
 
 
@@ -267,9 +269,9 @@ env_cfg = dict(
 train_cfg = dict(
     type="robonav.StreamingSequenceBPTTTrainLoop",
     max_epochs=num_epochs,
-    val_interval=-1,
-)  # -1 note don't eval
-val_cfg = dict(type="SequenceBatchValLoop")
+    val_interval=50,
+)
+val_cfg = dict(type="robonav.AquaSequenceValLoop")
 test_cfg = dict(type="SequenceBatchInferLoop")
 
 optim_wrapper = dict(
@@ -297,10 +299,10 @@ param_scheduler = [
         end_factor=1,
         by_epoch=False,
         begin=0,
-        end=500,
+        end=100,
     ),  # warmup
     dict(
-        type="CosineAnnealingLR", by_epoch=False, begin=500, eta_min=1e-5
+        type="CosineAnnealingLR", by_epoch=False, begin=100, eta_min=1e-5
     ),  # main LR Scheduler
     # dict(type='PolyLR', by_epoch=False, begin=0, eta_min=0, power=1.0) # main LR Scheduler
 ]
@@ -330,7 +332,10 @@ default_hooks = dict(
     logger=dict(type="LoggerHook", interval=1),
     param_scheduler=dict(type="ParamSchedulerHook"),
     checkpoint=dict(
-        type="CheckpointHook", interval=100, save_best="accuracy", rule="greater"
+        type="CheckpointHook",
+        interval=50,
+        save_best="trajectory/ADE_m",
+        rule="less",
     ),
     sampler_seed=dict(type="DistSamplerSeedHook"),
 )

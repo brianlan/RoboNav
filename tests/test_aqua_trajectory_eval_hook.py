@@ -82,15 +82,6 @@ def test_tensor_mode_returns_trajectory():
         assert torch.isfinite(outputs).all()
 
 
-def test_predict_mode_returns_backbone_features():
-    model = StubAquaNet(num_steps=5)
-    batch = 2
-    f4 = model(**_forward_inputs(batch), mode="predict")
-    # stub backbone f4 is the (B, 1, 1, 1) pooled feature, not the
-    # (B, K, 7) trajectory reserved for mode="tensor"
-    assert f4.shape == (batch, 1, 1, 1)
-
-
 class ResetCountingModel:
     def __init__(self):
         self.reset_count = 0

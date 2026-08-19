@@ -1,5 +1,5 @@
 import torch
-
+from mmengine.structures import BaseDataElement
 from prefusion import BaseModel
 
 from robonav.registry import MODELS
@@ -88,7 +88,7 @@ class AquaNet(BaseModel):
         depth_predictions = self.depth_head(f4, f3, f2, f1)
         trajectory = self.trajectory_head(final_feat, hidden)
 
-        if mode == "loss":
+        if mode in ("loss", "predict"):
             camera_depths = torch.row_stack(camera_depths)
             camera_depth_valid_masks = torch.row_stack(camera_depth_valid_masks)
             occupancy = torch.row_stack(occupancy)
@@ -96,7 +96,7 @@ class AquaNet(BaseModel):
             traversability = torch.row_stack(traversability)
             # list elements are per-sample (K, 7); stack keeps (B, K, 7)
             future_trajectory = torch.stack(future_trajectory)
-            return self.loss_module(
+            losses = self.loss_module(
                 trajectory=trajectory,
                 trajectory_target=future_trajectory,
                 twist=twist,
@@ -104,6 +104,25 @@ class AquaNet(BaseModel):
                 depth_target=camera_depths,
                 depth_valid_mask=camera_depth_valid_masks,
             )
+            if mode == "loss":
+                return losses
+        if mode == "predict":
+            # MMEngine ValLoop contract: one BaseDataElement per sample,
+            # plus a trailing element whose only field is `loss`. Only
+            # weighted loss_* keys belong there, so raw metrics cannot be
+            # double-counted by MMEngine loss parsing.
+            predictions = []
+            for sample_trajectory in trajectory:
+                prediction = BaseDataElement()
+                prediction.pred_trajectory = sample_trajectory.detach().to("cpu")
+                predictions.append(prediction)
+            loss_element = BaseDataElement()
+            loss_element.loss = {
+                name: value.detach()
+                for name, value in losses.items()
+                if name.startswith("loss_")
+            }
+            return predictions + [loss_element]
         if mode == "tensor":
             return trajectory
         return f4

@@ -6,3 +6,4 @@ from .tensor_smith import *
 from .transformable import *
 from .transformable_loader import *
 from .hook import *
+from .metric import *
