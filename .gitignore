@@ -222,3 +222,4 @@ __marimo__/
 
 # training logs
 work_dirs
+ckpts
