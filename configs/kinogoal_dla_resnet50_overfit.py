@@ -1,6 +1,6 @@
 import datetime
 
-experiment_name = "kinogoal_dla_resnet18_overfit"
+experiment_name = "kinogoal_dla_resnet50_overfit"
 today = datetime.datetime.now().strftime("%m%d")
 
 custom_imports = dict(
@@ -21,7 +21,7 @@ find_unused_parameters = True
 
 num_gpus = 1
 batch_size = 2
-num_epochs = 200
+num_epochs = 100
 possible_sequence_lengths = [20]
 
 # Single source for the depth range: used by both CameraDepthTensor
@@ -196,7 +196,7 @@ model = dict(
         device="cuda",
     ),
     backbone=dict(
-        type="robonav.AquaResNet18D",
+        type="robonav.AquaResNet50D",
         features_only=True,
         pretrained=True,
         out_indices=(1, 2, 3, 4),
@@ -206,8 +206,8 @@ model = dict(
     ),
     feature_modulation=dict(
         type="robonav.FeatureModulation",
-        f4_chans=512,
-        f3_chans=256,
+        f4_chans=2048,
+        f3_chans=1024,
         out_chans=256,
     ),
     temporal_fuser=dict(
@@ -217,10 +217,10 @@ model = dict(
     ),
     depth_head=dict(
         type="robonav.DepthHead",
-        f4_chans=512,
-        f3_chans=256,
-        f2_chans=128,
-        f1_chans=64,
+        f4_chans=2048,
+        f3_chans=1024,
+        f2_chans=512,
+        f1_chans=256,
         decoder_chans=64,
     ),
     loss=dict(
