@@ -94,6 +94,26 @@ class AquaLoss(BaseModel):
                 f"twist must have shape B,3 with B={trajectory.shape[0]}, "
                 f"got {tuple(twist.shape)}"
             )
+        twist_scales = trajectory.new_tensor(
+            [self.vel_scale, self.vel_scale, self.omega_scale]
+        )
+        traj_terms = self._trajectory_terms(
+            trajectory, trajectory_target, twist_scales
+        )
+        kin_pos, kin_yaw = self._kinematic_consistency(trajectory, twist)
+        depth = self.depth_loss(depth_predictions, depth_target, depth_valid_mask)
+
+        raw = dict(traj_terms, kin_pos=kin_pos, kin_yaw=kin_yaw, depth=depth)
+        losses = {}
+        for name, value in raw.items():
+            losses[f"loss_{name}"] = value * self.loss_weights[name]
+            losses[f"{name}_raw"] = value.detach()
+        losses.update(self._metrics(trajectory, trajectory_target, twist_scales))
+        return losses
+
+    def _trajectory_terms(self, trajectory, trajectory_target, twist_scales):
+        """Per-state supervision: terminal-weighted xy error, yaw direction
+        error, unit-norm penalty, and scaled velocity error."""
         pred_xy = trajectory[..., :2]
         pred_q = trajectory[..., 2:4]
         target_xy = trajectory_target[..., :2]
@@ -112,34 +132,18 @@ class AquaLoss(BaseModel):
         ).mean()
         traj_unit = ((pred_norm**2 - 1) ** 2).mean()
 
-        twist_scales = trajectory.new_tensor(
-            [self.vel_scale, self.vel_scale, self.omega_scale]
-        )
         traj_vel = self._smooth_l1(
             (trajectory[..., 4:] - trajectory_target[..., 4:]) / twist_scales,
             self.beta_vel,
         ).mean()
-
-        kin_pos, kin_yaw = self._kinematic_consistency(trajectory, twist)
-        depth = self.depth_loss(depth_predictions, depth_target, depth_valid_mask)
-
-        raw = dict(
-            traj_xy=traj_xy,
-            traj_yaw=traj_yaw,
-            traj_unit=traj_unit,
-            traj_vel=traj_vel,
-            kin_pos=kin_pos,
-            kin_yaw=kin_yaw,
-            depth=depth,
+        return dict(
+            traj_xy=traj_xy, traj_yaw=traj_yaw, traj_unit=traj_unit, traj_vel=traj_vel
         )
-        losses = {}
-        for name, value in raw.items():
-            losses[f"loss_{name}"] = value * self.loss_weights[name]
-            losses[f"{name}_raw"] = value.detach()
-        losses.update(self._metrics(trajectory, trajectory_target, twist_scales))
-        return losses
 
     def _kinematic_consistency(self, trajectory, twist):
+        """From the origin pose and current twist, trapezoidal integration
+        of the predicted velocities must reproduce the predicted positions
+        and yaw angles."""
         pred_xy = trajectory[..., :2]
         pred_q = trajectory[..., 2:4]
         batch = pred_xy.shape[0]
@@ -147,9 +151,7 @@ class AquaLoss(BaseModel):
         position = torch.cat((pred_xy.new_zeros(batch, 1, 2), pred_xy), dim=1)
         velocity = torch.cat((twist[:, :2].unsqueeze(1), trajectory[..., 4:6]), dim=1)
         position_residual = (
-            position[:, 1:]
-            - position[:, :-1]
-            - self.delta_t * (velocity[:, 1:] + velocity[:, :-1]) / 2 
+            position[:, 1:] - position[:, :-1] - self._trapezoid(velocity)
         )
         kin_pos = self._smooth_l1(
             position_residual / self.xy_scale, self.beta_kin_pos
@@ -162,11 +164,15 @@ class AquaLoss(BaseModel):
         sin_delta = sin[:, 1:] * cos[:, :-1] - cos[:, 1:] * sin[:, :-1]
         cos_delta = cos[:, 1:] * cos[:, :-1] + sin[:, 1:] * sin[:, :-1]
         omega = torch.cat((twist[:, 2:3].unsqueeze(1), trajectory[..., 6:7]), dim=1)
-        omega_delta = self.delta_t / 2 * (omega[:, 1:] + omega[:, :-1])
+        omega_delta = self._trapezoid(omega)
         kin_yaw = (
             1 - sin_delta * omega_delta.sin() - cos_delta * omega_delta.cos()
         ).mean()
         return kin_pos, kin_yaw
+
+    def _trapezoid(self, values):
+        """Per-step trapezoidal integral: delta_t * (v_k + v_{k+1}) / 2."""
+        return self.delta_t * (values[:, 1:] + values[:, :-1]) / 2
 
     @torch.no_grad()
     def _metrics(self, trajectory, trajectory_target, vel_scales):
