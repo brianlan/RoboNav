@@ -2,7 +2,7 @@
 
 ## 结论
 
-`kinogoal_dla_resnet18_overfit_0819_epoch_500.pth` 可以部署到 Jetson Orin NX 的单颗 DLA 上，但不能把原始 PyTorch/ONNX 图原样交给 TensorRT。需要使用 [`tools/export_dla.py`](../tools/export_dla.py) 做等价图改写，再用 TensorRT 的 DLA-only 模式构建。
+`kinogoal_dla_resnet18_overfit_0819_epoch_500.pth` 和 `kinogoal_dla_resnet50_overfit_0819_epoch_100.pth` 都可以部署到 Jetson Orin NX 的单颗 DLA 上，但不能把原始 PyTorch/ONNX 图原样交给 TensorRT。需要使用 [`tools/export_dla.py`](../tools/export_dla.py) 做等价图改写，再用 TensorRT 的 DLA-only 模式构建。
 
 当前验证条件：Jetson Linux R36.4.3、TensorRT 10.3、FP16、batch=1、DLA Core 0、未启用 GPU fallback。最终 engine 构建成功，随机输入推理输出均为有限值。
 
@@ -80,6 +80,16 @@ PYTHONPATH=/tmp/onnx-pkg/usr/lib/python3/dist-packages \
   /tmp/robonav_dla.onnx
 ```
 
+ResNet-50 需要显式选择 backbone：
+
+```bash
+PYTHONPATH=/tmp/onnx-pkg/usr/lib/python3/dist-packages \
+  /usr/bin/python3 tools/export_dla.py \
+  --backbone resnet50 \
+  ckpts/kinogoal_dla_resnet50_overfit_0819_epoch_100.pth \
+  /tmp/robonav_resnet50_dla.onnx
+```
+
 构建 DLA-only engine：
 
 ```bash
@@ -123,3 +133,11 @@ python tools/benchmark_dla.py /tmp/robonav_dla_core0.engine
 - Jetson 统一内存中的系统 RAM 增量：约 180 MiB，受缓存和后台进程影响
 
 这是单颗 DLA Core 0 的结果，不是两个 DLA core 并行。FPS 只覆盖这个静态网络 engine，不包括相机输入和 PE 生成。
+
+ResNet-50 版本在相同条件下的实测结果：
+
+- DLA Core 0：17.38 FPS（两次测试为 17.375 和 17.390 FPS）
+- 平均端到端延迟：约 57.8 ms
+- 平均 GPU/DLA 计算时间：约 57.2 ms
+- engine：68.9 MiB
+- GPU fallback：禁用

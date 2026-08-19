@@ -12,15 +12,25 @@ class B(nn.Module):
  def forward(s,x):
   y=s.n2(s.c2(F.relu(s.n1(s.c1(x)))));return F.relu(y+(s.d(x) if s.d else x))
 
+class R50B(nn.Module):
+ def __init__(s,ci,co,st=1):
+  super().__init__();m=co//4;s.c1=nn.Conv2d(ci,m,1,bias=False);s.n1=nn.BatchNorm2d(m);s.c2=nn.Conv2d(m,m,3,st,1,bias=False);s.n2=nn.BatchNorm2d(m);s.c3=nn.Conv2d(m,co,1,bias=False);s.n3=nn.BatchNorm2d(co);s.d=None if st==1 and ci==co else nn.Sequential(nn.AvgPool2d(2,st,ceil_mode=True,count_include_pad=False) if st!=1 else nn.Identity(),nn.Conv2d(ci,co,1,bias=False),nn.BatchNorm2d(co))
+ def forward(s,x):
+  y=s.n3(s.c3(F.relu(s.n2(s.c2(F.relu(s.n1(s.c1(x))))))));return F.relu(y+(s.d(x) if s.d else x))
+
 class BB(nn.Module):
- def __init__(s):
-  super().__init__();s.c=nn.Sequential(nn.Conv2d(3,32,3,2,1,bias=False),nn.BatchNorm2d(32),nn.ReLU(),nn.Conv2d(32,32,3,padding=1,bias=False),nn.BatchNorm2d(32),nn.ReLU(),nn.Conv2d(32,64,3,padding=1,bias=False));s.n=nn.BatchNorm2d(64);s.pe=nn.Conv2d(6,64,1);s.f=nn.Conv2d(128,64,1);s.p=nn.MaxPool2d(3,2,1);s.l1=nn.Sequential(B(64,64),B(64,64));s.l2=nn.Sequential(B(64,128,2),B(128,128));s.l3=nn.Sequential(B(128,256,2),B(256,256));s.l4=nn.Sequential(B(256,512,2),B(512,512))
+ def __init__(s,backbone="resnet18"):
+  super().__init__();s.c=nn.Sequential(nn.Conv2d(3,32,3,2,1,bias=False),nn.BatchNorm2d(32),nn.ReLU(),nn.Conv2d(32,32,3,padding=1,bias=False),nn.BatchNorm2d(32),nn.ReLU(),nn.Conv2d(32,64,3,padding=1,bias=False));s.n=nn.BatchNorm2d(64);s.pe=nn.Conv2d(6,64,1);s.f=nn.Conv2d(128,64,1);s.p=nn.MaxPool2d(3,2,1)
+  if backbone=="resnet50":
+   s.channels=(256,512,1024,2048);q=R50B;s.l1=nn.Sequential(q(64,256),*(q(256,256) for _ in range(2)));s.l2=nn.Sequential(q(256,512,2),*(q(512,512) for _ in range(3)));s.l3=nn.Sequential(q(512,1024,2),*(q(1024,1024) for _ in range(5)));s.l4=nn.Sequential(q(1024,2048,2),*(q(2048,2048) for _ in range(2)))
+  else:
+   s.channels=(64,128,256,512);q=B;s.l1=nn.Sequential(q(64,64),q(64,64));s.l2=nn.Sequential(q(64,128,2),q(128,128));s.l3=nn.Sequential(q(128,256,2),q(256,256));s.l4=nn.Sequential(q(256,512,2),q(512,512))
  def forward(s,r,p):
   r=F.relu(s.n(s.c(r)));x=s.p(s.f(torch.cat((r,s.pe(p)),1)));a=s.l1(x);b=s.l2(a);c=s.l3(b);d=s.l4(c);return a,b,c,d
 
 class FM(nn.Module):
- def __init__(s):
-  super().__init__();s.gs=torch.tensor([10.,10.,3.14159265,1.,1.,1.]);s.fg=nn.Conv2d(9,512,1);s.fb=nn.Conv2d(9,512,1);s.f4=nn.Conv2d(512,256,1);s.f3=nn.Conv2d(256,256,1);s.st=nn.Conv2d(9,256,1);s.ad=nn.Conv2d(256,256,1);s.w=nn.Conv2d(256,256,1);s.de=nn.Conv2d(256,256,1);s.hp=nn.Conv2d(256,256,1);s.hs=nn.Conv2d(256,256,1,bias=False);s.hp.weight.requires_grad_(False);s.hp.bias.requires_grad_(False);s.hs.weight.requires_grad_(False);s.hp.weight.zero_();s.hs.weight.zero_();s.hp.weight[:,:,0,0].copy_(torch.eye(256));s.hp.bias.fill_(3);s.hs.weight[:,:,0,0].copy_(torch.eye(256)/6)
+ def __init__(s,f4c=512,f3c=256):
+  super().__init__();s.gs=torch.tensor([10.,10.,3.14159265,1.,1.,1.]);s.fg=nn.Conv2d(9,f4c,1);s.fb=nn.Conv2d(9,f4c,1);s.f4=nn.Conv2d(f4c,256,1);s.f3=nn.Conv2d(f3c,256,1);s.st=nn.Conv2d(9,256,1);s.ad=nn.Conv2d(256,256,1);s.w=nn.Conv2d(256,256,1);s.de=nn.Conv2d(256,256,1);s.hp=nn.Conv2d(256,256,1);s.hs=nn.Conv2d(256,256,1,bias=False);s.hp.weight.requires_grad_(False);s.hp.bias.requires_grad_(False);s.hs.weight.requires_grad_(False);s.hp.weight.zero_();s.hs.weight.zero_();s.hp.weight[:,:,0,0].copy_(torch.eye(256));s.hp.bias.fill_(3);s.hs.weight[:,:,0,0].copy_(torch.eye(256)/6)
  def forward(s,f4,f3,t,g):
   z=torch.cat((g,t),1);q=f4+f4*s.fg(z)+s.fb(z);x=F.relu(F.interpolate(s.f4(q),size=f3.shape[-2:],mode="nearest")+s.f3(f3));a=F.relu(s.ad(x)+s.st(z));return x+s.hs(F.relu6(s.hp(s.w(a))))*s.de(x)
 
@@ -42,8 +52,8 @@ class TF(nn.Module):
   z=torch.cat((s.c(x),t,d,g),1);h,c=s.r(z,h,c);x=x+x*s.g(h)+s.b(h);return s.h(x),h,c
 
 class DH(nn.Module):
- def __init__(s):
-  super().__init__();s.l=nn.ModuleList(nn.Conv2d(c,64,1) for c in (512,256,128,64));s.r=nn.ModuleList(nn.Conv2d(64,64,3,padding=1) for _ in range(4));s.p=nn.ModuleList(nn.Conv2d(64,1,1) for _ in range(4))
+ def __init__(s,channels=(512,256,128,64)):
+  super().__init__();s.l=nn.ModuleList(nn.Conv2d(c,64,1) for c in channels);s.r=nn.ModuleList(nn.Conv2d(64,64,3,padding=1) for _ in range(4));s.p=nn.ModuleList(nn.Conv2d(64,1,1) for _ in range(4))
  def forward(s,f4,f3,f2,f1):
   x=s.l[0](f4);o=[]
   for i,f in enumerate((f4,f3,f2,f1)):
@@ -58,20 +68,21 @@ class TH(nn.Module):
   x=s.t(F.relu(s.c(torch.cat((x,h),1))));x=x.reshape(-1,64,1,20);return s.o(x+s.b(F.relu(s.a(x))))
 
 class M(nn.Module):
- def __init__(s):
-  super().__init__();s.backbone=BB();s.fm=FM();s.temporal=TF();s.depth=DH();s.traj=TH()
+ def __init__(s,backbone="resnet18"):
+  super().__init__();s.backbone=BB(backbone);s.fm=FM(s.backbone.channels[3],s.backbone.channels[2]);s.temporal=TF();s.depth=DH(tuple(reversed(s.backbone.channels)));s.traj=TH()
  def forward(s,r,p,t,d,g,h,c):
   f1,f2,f3,f4=s.backbone(r,p);x=s.fm(f4,f3,t,g);x,h,c=s.temporal(x,t,d,g,h,c);return (s.traj(x,h),*s.depth(f4,f3,f2,f1),h,c)
 
-def export(checkpoint: Path, output: Path, optimize: bool = True):
- m=M().eval()
+def export(checkpoint: Path, output: Path, optimize: bool = True, backbone: str = "resnet18"):
+ m=M(backbone).eval()
  st=torch.load(checkpoint,map_location="cpu",weights_only=True)["state_dict"]
  mp={"feature_modulation.":"fm.","temporal_fuser.":"temporal.","depth_head.":"depth.","trajectory_head.":"traj."}
  for a,b in mp.items():st={k.replace(a,b) : v for k,v in st.items()}
  rep={"fm.f4_conv_1x1":"fm.f4","fm.f3_conv_1x1":"fm.f3","fm.spatial_gate.state_linear":"fm.st","fm.spatial_gate.adjust_conv_1x1":"fm.ad","fm.spatial_gate.weight_conv_1x1":"fm.w","fm.spatial_gate.feat_delta_conv_1x1":"fm.de","fm.film_by_goal_n_twist.gamma_linear":"fm.fg","fm.film_by_goal_n_twist.beta_linear":"fm.fb","temporal.vfeat_compressor.conv1":"temporal.c.a","temporal.vfeat_compressor.conv2":"temporal.c.b","temporal.vfeat_compressor.conv3":"temporal.c.c","temporal.sru.cells.0.linear_all":"temporal.r.a","temporal.sru.cells.0.transform_gate":"temporal.r.t","temporal.temporal_film.gamma_linear":"temporal.g","temporal.temporal_film.beta_linear":"temporal.b","temporal.history_enhanced_compressor.conv1":"temporal.h.a","temporal.history_enhanced_compressor.conv2":"temporal.h.b","temporal.history_enhanced_compressor.conv3":"temporal.h.c","depth.laterals":"depth.l","depth.refinements":"depth.r","depth.predictors":"depth.p","traj.temporal_conv1":"traj.a","traj.temporal_conv2":"traj.b","traj.out_conv":"traj.o"}
  rep.update({"backbone.conv1":"backbone.c","backbone.bn1":"backbone.n","backbone.pe_encoder":"backbone.pe","backbone.rgb_pe_fuse":"backbone.f","backbone.layer1":"backbone.l1","backbone.layer2":"backbone.l2","backbone.layer3":"backbone.l3","backbone.layer4":"backbone.l4"})
  for i in range(5):
-  rep.update({f"backbone.l{i}.0.conv1":f"backbone.l{i}.0.c1",f"backbone.l{i}.0.bn1":f"backbone.l{i}.0.n1",f"backbone.l{i}.0.conv2":f"backbone.l{i}.0.c2",f"backbone.l{i}.0.bn2":f"backbone.l{i}.0.n2",f"backbone.l{i}.0.downsample":f"backbone.l{i}.0.d",f"backbone.l{i}.1.conv1":f"backbone.l{i}.1.c1",f"backbone.l{i}.1.bn1":f"backbone.l{i}.1.n1",f"backbone.l{i}.1.conv2":f"backbone.l{i}.1.c2",f"backbone.l{i}.1.bn2":f"backbone.l{i}.1.n2"})
+  for j in range(7):
+   rep.update({f"backbone.l{i}.{j}.conv1":f"backbone.l{i}.{j}.c1",f"backbone.l{i}.{j}.bn1":f"backbone.l{i}.{j}.n1",f"backbone.l{i}.{j}.conv2":f"backbone.l{i}.{j}.c2",f"backbone.l{i}.{j}.bn2":f"backbone.l{i}.{j}.n2",f"backbone.l{i}.{j}.conv3":f"backbone.l{i}.{j}.c3",f"backbone.l{i}.{j}.bn3":f"backbone.l{i}.{j}.n3",f"backbone.l{i}.{j}.downsample":f"backbone.l{i}.{j}.d"})
  rep.update({"traj.compress":"traj.c","traj.to_seq":"traj.t"})
  st={k:v for k,v in st.items() if not k.endswith("num_batches_tracked")}
  for a,b in rep.items():st={k.replace(a,b):v for k,v in st.items()}
@@ -103,8 +114,9 @@ def main():
  parser.add_argument("checkpoint",type=Path)
  parser.add_argument("output",type=Path)
  parser.add_argument("--no-optimize",action="store_true",help="keep the raw ONNX graph")
+ parser.add_argument("--backbone",choices=("resnet18","resnet50"),default="resnet18")
  args=parser.parse_args()
- export(args.checkpoint,args.output,not args.no_optimize)
+ export(args.checkpoint,args.output,not args.no_optimize,args.backbone)
 
 
 if __name__=="__main__":
