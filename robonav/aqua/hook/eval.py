@@ -46,13 +46,8 @@ class AquaTrajectoryEvalHook(Hook):
     def after_test_iter(
         self, runner, batch_idx, data_batch=None, outputs=None, mode="test"
     ):
-        pred7 = outputs.detach().to("cpu", torch.float32)
-        gt7 = data_batch[0]["future_trajectory"].to("cpu", torch.float32).unsqueeze(0)
-        twist = data_batch[0].get("twist")
-        if torch.is_tensor(twist):
-            twist = twist.to("cpu", torch.float32)
-        for name, value in self._frame_metrics(pred7, gt7, twist).items():
-            self._sums[name] = self._sums.get(name, 0.0) + value
+        metrics = self._evaluate_frame(data_batch, outputs)
+        self._record_metrics(metrics)
         self._frames += 1
 
     def after_test_epoch(self, runner, metrics=None):
@@ -66,6 +61,19 @@ class AquaTrajectoryEvalHook(Hook):
         runner.logger.info(
             f"Aqua trajectory evaluation over {self._frames} frames:\n{table}"
         )
+
+    def _evaluate_frame(self, data_batch, outputs):
+        sample = data_batch[0]
+        pred7 = outputs.detach().to("cpu", torch.float32)
+        gt7 = sample["future_trajectory"].to("cpu", torch.float32).unsqueeze(0)
+        twist = sample.get("twist")
+        if torch.is_tensor(twist):
+            twist = twist.to("cpu", torch.float32)
+        return self._frame_metrics(pred7, gt7, twist)
+
+    def _record_metrics(self, metrics):
+        for name, value in metrics.items():
+            self._sums[name] = self._sums.get(name, 0.0) + value
 
     def _frame_metrics(self, pred7, gt7, twist):
         if torch.is_tensor(twist):

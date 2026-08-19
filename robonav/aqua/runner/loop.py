@@ -80,11 +80,8 @@ class AquaSequenceValLoop(ValLoop):
         self._loss_sums = {}
         self._num_samples = 0
         sequence_length = self.dataloader.dataset.sequence_length
-        model = self.runner.model
         for sequence_idx, sequence_batch in enumerate(self.dataloader):
-            (model.module if hasattr(model, "module") else model).reset()
-            for frame_idx, frame_batch in enumerate(sequence_batch):
-                self.run_iter(sequence_idx * sequence_length + frame_idx, frame_batch)
+            self._run_sequence(sequence_idx, sequence_batch, sequence_length)
         loss_metrics, global_samples = self._reduce_stats()
         metrics = self.evaluator.evaluate(global_samples)
         metrics.update(loss_metrics)
@@ -92,11 +89,35 @@ class AquaSequenceValLoop(ValLoop):
         self.runner.call_hook("after_val")
         return metrics
 
+    def _run_sequence(self, sequence_idx, sequence_batch, sequence_length):
+        self._reset_model()
+        for frame_idx, frame_batch in enumerate(sequence_batch):
+            self.run_iter(sequence_idx * sequence_length + frame_idx, frame_batch)
+
+    def _reset_model(self):
+        model = (
+            self.runner.model.module
+            if hasattr(self.runner.model, "module")
+            else self.runner.model
+        )
+        model.reset()
+
     @torch.no_grad()
     def run_iter(self, idx, frame_batch):
         self.runner.call_hook("before_val_iter", batch_idx=idx, data_batch=frame_batch)
+        predictions, loss_element = self._predict_frame(frame_batch)
+        self._record_frame_losses(predictions, loss_element)
+        self.evaluator.process(data_samples=predictions, data_batch=frame_batch)
+        self.runner.call_hook(
+            "after_val_iter", batch_idx=idx, data_batch=frame_batch, outputs=predictions
+        )
+
+    def _predict_frame(self, frame_batch):
         with autocast(enabled=self.fp16):
             *predictions, loss_element = self.runner.model.val_step(frame_batch)
+        return predictions, loss_element
+
+    def _record_frame_losses(self, predictions, loss_element):
         batch = len(predictions)
         for name, value in loss_element.loss.items():
             # accumulate as device tensors; only the final all-reduced
@@ -105,10 +126,6 @@ class AquaSequenceValLoop(ValLoop):
                 self._loss_sums.get(name, 0.0) + value.detach() * batch
             )
         self._num_samples += batch
-        self.evaluator.process(data_samples=predictions, data_batch=frame_batch)
-        self.runner.call_hook(
-            "after_val_iter", batch_idx=idx, data_batch=frame_batch, outputs=predictions
-        )
 
     def _reduce_stats(self):
         """All-reduce per-component loss sums and the sample count across

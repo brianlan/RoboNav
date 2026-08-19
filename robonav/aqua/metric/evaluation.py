@@ -49,13 +49,20 @@ def frame_trajectory_metrics(pred7, gt7, twist, delta_t):
     means over the batch. Metric names carry their units (m, rad,
     mps = m/s, radps = rad/s).
     """
+    pred, metrics = _trajectory_metrics(pred7, gt7)
+    if twist is not None:
+        metrics.update(_kinematic_errors(pred, twist, delta_t))
+    return metrics
+
+
+def _trajectory_metrics(pred7, gt7):
     pred = _smith.reverse(pred7)  # (B, K, 6): x, y, yaw, vx, vy, omega
     gt = _smith.reverse(gt7)
     xy_err = (pred[..., :2] - gt[..., :2]).norm(dim=-1)
     yaw_err = _wrap_angle(pred[..., 2] - gt[..., 2]).abs()
     lin_vel_err = (pred[..., 3:5] - gt[..., 3:5]).norm(dim=-1)
     ang_vel_err = (pred[..., 5] - gt[..., 5]).abs()
-    metrics = {
+    return pred, {
         "ADE_m": xy_err.mean().item(),
         "FDE_m": xy_err[:, -1].mean().item(),
         "yaw_mae_rad": yaw_err.mean().item(),
@@ -68,10 +75,6 @@ def frame_trajectory_metrics(pred7, gt7, twist, delta_t):
             (pred7[..., 2] ** 2 + pred7[..., 3] ** 2 - 1).abs().mean().item()
         ),
     }
-    if twist is not None:
-        metrics.update(_kinematic_errors(pred, twist, delta_t))
-    return metrics
-
 
 @METRICS.register_module()
 class AquaTrajectoryMetric(BaseMetric):
@@ -90,14 +93,15 @@ class AquaTrajectoryMetric(BaseMetric):
 
     def process(self, data_batch, data_samples):
         for data, sample in zip(data_batch, data_samples):
-            pred7 = sample["pred_trajectory"].to(torch.float32).unsqueeze(0)
-            gt7 = data["future_trajectory"].to(torch.float32).unsqueeze(0)
-            twist = data.get("twist")
-            if torch.is_tensor(twist):
-                twist = twist.to(torch.float32).unsqueeze(0)
-            self.results.append(
-                frame_trajectory_metrics(pred7, gt7, twist, self.delta_t)
-            )
+            self.results.append(self._evaluate_sample(data, sample))
+
+    def _evaluate_sample(self, data, sample):
+        pred7 = sample["pred_trajectory"].to(torch.float32).unsqueeze(0)
+        gt7 = data["future_trajectory"].to(torch.float32).unsqueeze(0)
+        twist = data.get("twist")
+        if torch.is_tensor(twist):
+            twist = twist.to(torch.float32).unsqueeze(0)
+        return frame_trajectory_metrics(pred7, gt7, twist, self.delta_t)
 
     def compute_metrics(self, results):
         return {

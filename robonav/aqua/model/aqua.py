@@ -39,12 +39,7 @@ class AquaNet(BaseModel):
         each frame's loss dict, average over time, then call backward and
         step the optimizer once."""
         with optim_wrapper.optim_context(self):
-            sequence = [self.data_preprocessor(frame, True) for frame in data]
-            self.reset()
-            parsed = [
-                self.parse_losses(self._run_forward(frame, mode="loss"))
-                for frame in sequence
-            ]
+            parsed = self._run_training_sequence(data)
             loss = torch.stack([scalar for scalar, _ in parsed]).mean()
         log_vars = {
             key: sum(frame_vars[key] for _, frame_vars in parsed) / len(parsed)
@@ -56,6 +51,14 @@ class AquaNet(BaseModel):
         optim_wrapper.update_params(loss)
         self.reset()
         return log_vars
+
+    def _run_training_sequence(self, data):
+        sequence = [self.data_preprocessor(frame, True) for frame in data]
+        self.reset()
+        return [
+            self.parse_losses(self._run_forward(frame, mode="loss"))
+            for frame in sequence
+        ]
 
     def forward(
         self,
@@ -76,53 +79,93 @@ class AquaNet(BaseModel):
         mode="loss",
         **kwargs,
     ):
-        camera_images = torch.row_stack(camera_images)
-        pe = torch.row_stack(position_embedding)
-        goal = torch.row_stack(goal)
-        twist = torch.row_stack(twist)
-        delta_poses = torch.row_stack(delta_poses)
+        camera_images, position_embedding, twist, delta_poses, goal = self._stack_inputs(
+            camera_images, position_embedding, twist, delta_poses, goal
+        )
+        f4, depth_predictions, trajectory = self._predict_outputs(
+            camera_images, position_embedding, twist, delta_poses, goal
+        )
 
-        f1, f2, f3, f4 = self.backbone(camera_images, pe)
+        if mode in ("loss", "predict"):
+            losses = self._compute_losses(
+                trajectory,
+                twist,
+                camera_depths,
+                camera_depth_valid_masks,
+                occupancy,
+                clearance,
+                traversability,
+                future_trajectory,
+                depth_predictions,
+            )
+            if mode == "loss":
+                return losses
+            return self._format_predictions(trajectory, losses)
+        if mode == "tensor":
+            return trajectory
+        return f4
+
+    def _stack_inputs(self, camera_images, position_embedding, twist, delta_poses, goal):
+        return (
+            torch.row_stack(camera_images),
+            torch.row_stack(position_embedding),
+            torch.row_stack(twist),
+            torch.row_stack(delta_poses),
+            torch.row_stack(goal),
+        )
+
+    def _predict_outputs(
+        self, camera_images, position_embedding, twist, delta_poses, goal
+    ):
+        f1, f2, f3, f4 = self.backbone(camera_images, position_embedding)
         f3g = self.feature_modulation(f4, f3, twist, goal)
         final_feat, hidden = self.temporal_fuser(f3g, twist, delta_poses, goal)
         depth_predictions = self.depth_head(f4, f3, f2, f1)
         trajectory = self.trajectory_head(final_feat, hidden)
+        return f4, depth_predictions, trajectory
 
-        if mode in ("loss", "predict"):
-            camera_depths = torch.row_stack(camera_depths)
-            camera_depth_valid_masks = torch.row_stack(camera_depth_valid_masks)
-            occupancy = torch.row_stack(occupancy)
-            clearance = torch.row_stack(clearance)
-            traversability = torch.row_stack(traversability)
-            # list elements are per-sample (K, 7); stack keeps (B, K, 7)
-            future_trajectory = torch.stack(future_trajectory)
-            losses = self.loss_module(
-                trajectory=trajectory,
-                trajectory_target=future_trajectory,
-                twist=twist,
-                depth_predictions=depth_predictions,
-                depth_target=camera_depths,
-                depth_valid_mask=camera_depth_valid_masks,
-            )
-            if mode == "loss":
-                return losses
-        if mode == "predict":
-            # MMEngine ValLoop contract: one BaseDataElement per sample,
-            # plus a trailing element whose only field is `loss`. Only
-            # weighted loss_* keys belong there, so raw metrics cannot be
-            # double-counted by MMEngine loss parsing.
-            predictions = []
-            for sample_trajectory in trajectory:
-                prediction = BaseDataElement()
-                prediction.pred_trajectory = sample_trajectory.detach().to("cpu")
-                predictions.append(prediction)
-            loss_element = BaseDataElement()
-            loss_element.loss = {
-                name: value.detach()
-                for name, value in losses.items()
-                if name.startswith("loss_")
-            }
-            return predictions + [loss_element]
-        if mode == "tensor":
-            return trajectory
-        return f4
+    def _compute_losses(
+        self,
+        trajectory,
+        twist,
+        camera_depths,
+        camera_depth_valid_masks,
+        occupancy,
+        clearance,
+        traversability,
+        future_trajectory,
+        depth_predictions,
+    ):
+        camera_depths = torch.row_stack(camera_depths)
+        camera_depth_valid_masks = torch.row_stack(camera_depth_valid_masks)
+        occupancy = torch.row_stack(occupancy)
+        clearance = torch.row_stack(clearance)
+        traversability = torch.row_stack(traversability)
+        # list elements are per-sample (K, 7); stack keeps (B, K, 7)
+        future_trajectory = torch.stack(future_trajectory)
+        return self.loss_module(
+            trajectory=trajectory,
+            trajectory_target=future_trajectory,
+            twist=twist,
+            depth_predictions=depth_predictions,
+            depth_target=camera_depths,
+            depth_valid_mask=camera_depth_valid_masks,
+        )
+
+    def _format_predictions(self, trajectory, losses):
+        # MMEngine ValLoop contract: one BaseDataElement per sample,
+        # plus a trailing element whose only field is `loss`. Only
+        # weighted loss_* keys belong there, so raw metrics cannot be
+        # double-counted by MMEngine loss parsing.
+        predictions = []
+        for sample_trajectory in trajectory:
+            prediction = BaseDataElement()
+            prediction.pred_trajectory = sample_trajectory.detach().to("cpu")
+            predictions.append(prediction)
+        loss_element = BaseDataElement()
+        loss_element.loss = {
+            name: value.detach()
+            for name, value in losses.items()
+            if name.startswith("loss_")
+        }
+        return predictions + [loss_element]
