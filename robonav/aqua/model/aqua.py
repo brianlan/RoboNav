@@ -104,4 +104,6 @@ class AquaNet(BaseModel):
                 depth_target=camera_depths,
                 depth_valid_mask=camera_depth_valid_masks,
             )
+        if mode == "tensor":
+            return trajectory
         return f4

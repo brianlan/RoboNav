@@ -335,7 +335,7 @@ default_hooks = dict(
     sampler_seed=dict(type="DistSamplerSeedHook"),
 )
 
-custom_hooks = []
+custom_hooks = [dict(type="robonav.AquaTrajectoryEvalHook", delta_t=0.1)]
 
 work_dir = f"./work_dirs/{experiment_name}_{today}"
 # load_from = "./ckpts/wuhan_vov_pretrain_0601.pth"
