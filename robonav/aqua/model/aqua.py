@@ -17,7 +17,7 @@ class AquaNet(BaseModel):
         feature_modulation=None,
         temporal_fuser=None,
         depth_head=None,
-        depth_loss=None,
+        loss=None,
         trajectory_head=None,
         **kwargs,
     ):
@@ -27,7 +27,7 @@ class AquaNet(BaseModel):
         self.feature_modulation = MODELS.build(feature_modulation)
         self.temporal_fuser = MODELS.build(temporal_fuser)
         self.depth_head = MODELS.build(depth_head)
-        self.depth_loss = MODELS.build(depth_loss)
+        self.loss_module = MODELS.build(loss)
         self.trajectory_head = MODELS.build(trajectory_head)
 
     def reset(self):
@@ -81,22 +81,27 @@ class AquaNet(BaseModel):
         goal = torch.row_stack(goal)
         twist = torch.row_stack(twist)
         delta_poses = torch.row_stack(delta_poses)
-        occupancy = torch.row_stack(occupancy)
-        clearance = torch.row_stack(clearance)
-        traversability = torch.row_stack(traversability)
 
         f1, f2, f3, f4 = self.backbone(camera_images, pe)
         f3g = self.feature_modulation(f4, f3, twist, goal)
         final_feat, hidden = self.temporal_fuser(f3g, twist, delta_poses, goal)
         depth_predictions = self.depth_head(f4, f3, f2, f1)
-        self.trajectory_head(final_feat, hidden)
+        trajectory = self.trajectory_head(final_feat, hidden)
 
         if mode == "loss":
             camera_depths = torch.row_stack(camera_depths)
             camera_depth_valid_masks = torch.row_stack(camera_depth_valid_masks)
-            return dict(
-                loss_depth=self.depth_loss(
-                    depth_predictions, camera_depths, camera_depth_valid_masks
-                )
+            occupancy = torch.row_stack(occupancy)
+            clearance = torch.row_stack(clearance)
+            traversability = torch.row_stack(traversability)
+            # list elements are per-sample (K, 7); stack keeps (B, K, 7)
+            future_trajectory = torch.stack(future_trajectory)
+            return self.loss_module(
+                trajectory=trajectory,
+                trajectory_target=future_trajectory,
+                twist=twist,
+                depth_predictions=depth_predictions,
+                depth_target=camera_depths,
+                depth_valid_mask=camera_depth_valid_masks,
             )
         return f4

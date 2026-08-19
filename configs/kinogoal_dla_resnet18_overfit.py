@@ -24,6 +24,10 @@ batch_size = 2
 num_epochs = 2000
 possible_sequence_lengths = [20]
 
+# Single source for the depth range: used by both CameraDepthTensor
+# (target normalization) and the depth loss (meters reconstruction).
+max_depth = 5
+
 # Virtual Camera settings
 camera_settings = {
     "FISHEYE": dict(
@@ -51,7 +55,7 @@ transformables = dict(
     camera_depths=dict(
         type="CameraDepthSet",
         loader=dict(type="CameraDepthSetLoader", camera_mapping=camera_mapping),
-        tensor_smith=dict(type="robonav.CameraDepthTensor", max_depth=5),
+        tensor_smith=dict(type="robonav.CameraDepthTensor", max_depth=max_depth),
     ),
     ego_poses=dict(type="EgoPoseSet"),
     goal=dict(
@@ -173,6 +177,18 @@ test_dataloader = dict(
     pin_memory=True,
 )
 
+# Phase 1 loss: single editable source for all optimized term weights
+# (docs/aquanet_loss_supervision_plan.md).
+loss_weights = dict(
+    traj_xy=1.0,
+    traj_yaw=1.0,
+    traj_unit=0.1,
+    traj_vel=1.0,
+    kin_pos=1.0,
+    kin_yaw=1.0,
+    depth=1.0,
+)
+
 model = dict(
     type="robonav.AquaNet",
     data_preprocessor=dict(
@@ -207,10 +223,26 @@ model = dict(
         f1_chans=64,
         decoder_chans=64,
     ),
-    depth_loss=dict(
-        type="robonav.MultiScaleDepthLoss",
-        beta=0.1,
-        loss_weight=1.0,
+    loss=dict(
+        type="robonav.AquaLoss",
+        loss_weights=loss_weights,
+        depth_loss=dict(
+            type="robonav.MultiScaleDepthLoss",
+            max_depth=max_depth,
+            log_offset=0.1,
+            beta=0.1,
+        ),
+        delta_t=0.1,  # must match future trajectory sampling
+        terminal_weight=5.0,  # terminal horizon step boost for L_xy
+        xy_scale=1.0,  # m
+        vel_scale=1.0,  # m/s
+        omega_scale=1.0,  # rad/s
+        v_stop_threshold=0.1,  # m/s
+        omega_stop_threshold=0.1,  # rad/s
+        eps=1e-6,
+        beta_xy=1.0,
+        beta_vel=1.0,
+        beta_kin_pos=1.0,
     ),
     trajectory_head=dict(
         type="robonav.TrajectoryHead",
@@ -283,7 +315,15 @@ visualizer = dict(
     ],
 )
 
-log_processor = dict(type="robonav.StreamingSequenceBPTTLogProcessor", tabulate_ncols=5)
+# Smooth weighted loss_* terms and detached *_raw values over the same
+# window (default pattern leaves *_raw as instantaneous values, so a
+# weight-1 term appears to differ from its raw term); ordinary metrics
+# such as ADE/FDE stay instantaneous.
+log_processor = dict(
+    type="robonav.StreamingSequenceBPTTLogProcessor",
+    tabulate_ncols=5,
+    mean_pattern=r".*(loss|time|data_time|grad_norm|gradnorm|_raw).*",
+)
 
 default_hooks = dict(
     timer=dict(type="IterTimerHook"),

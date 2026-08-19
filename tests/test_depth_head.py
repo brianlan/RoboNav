@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from mmengine import Config
 
-from robonav.aqua.loss import MultiScaleDepthLoss
+from robonav.aqua.loss import AquaLoss, MultiScaleDepthLoss
 from robonav.aqua.model.aqua import AquaNet
 from robonav.aqua.model.depth_head import DepthHead
 from robonav.registry import MODELS
@@ -48,7 +48,7 @@ def test_odd_pyramid_outputs_and_input_gradients():
 
     target = torch.full((2, 1, 17, 25), 0.25)
     valid = torch.ones_like(target, dtype=torch.bool)
-    MultiScaleDepthLoss(beta=0.1)(predictions, target, valid).backward()
+    MultiScaleDepthLoss(max_depth=5, log_offset=0.1, beta=0.1)(predictions, target, valid).backward()
     for feature in features:
         assert feature.grad is not None
         assert torch.isfinite(feature.grad).all()
@@ -109,11 +109,12 @@ def test_registry_and_overfit_config_build():
         )
     )
     head = MODELS.build(config.model.depth_head)
-    loss = MODELS.build(config.model.depth_loss)
+    loss = MODELS.build(config.model.loss)
     assert isinstance(head, DepthHead)
     assert head.laterals[-1].in_channels == 64
     assert head.laterals[-1].out_channels == 64
-    assert loss.beta == 0.1
+    assert isinstance(loss, AquaLoss)
+    assert loss.loss_weights == dict(config.loss_weights)
     assert config.possible_sequence_lengths == [20]
     assert config.transformables.camera_depths.tensor_smith.max_depth == 5
 
@@ -140,11 +141,15 @@ class _TemporalFuser(nn.Module):
 
 
 class _TrajectoryHead(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.out = nn.Linear(4, 7)
+
     def forward(self, final_feat, hidden):
-        return final_feat
+        return self.out(final_feat).unsqueeze(1).expand(-1, 20, -1)
 
 
-def test_aquanet_loss_backward_reaches_depth_head(monkeypatch):
+def test_aquanet_loss_backward_reaches_depth_and_trajectory_heads(monkeypatch):
     build = MODELS.build
     monkeypatch.setattr(MODELS, "build", lambda cfg: None if cfg is None else build(cfg))
     model = AquaNet(
@@ -156,26 +161,53 @@ def test_aquanet_loss_backward_reaches_depth_head(monkeypatch):
             f1_chans=4,
             decoder_chans=4,
         ),
-        depth_loss=dict(type="robonav.MultiScaleDepthLoss", beta=0.1),
+        loss=dict(
+            type="robonav.AquaLoss",
+            loss_weights=dict(
+                traj_xy=1.0,
+                traj_yaw=1.0,
+                traj_unit=0.1,
+                traj_vel=1.0,
+                kin_pos=1.0,
+                kin_yaw=1.0,
+                depth=1.0,
+            ),
+            depth_loss=dict(
+                type="robonav.MultiScaleDepthLoss", max_depth=5, log_offset=0.1, beta=0.1
+            ),
+            delta_t=0.1,
+        ),
     )
     model.backbone = _Backbone()
     model.feature_modulation = _FeatureModulation()
     model.temporal_fuser = _TemporalFuser()
     model.trajectory_head = _TrajectoryHead()
 
+    # realistic microbatch: two per-sample list elements, future_trajectory
+    # elements shaped (K, 7) exactly as FrameBatchMerger delivers them —
+    # the old row_stack bug produced (2*K, 7) and failed shape validation
     loss_dict = model(
-        camera_images=[torch.randn(1, 3, 32, 32)],
-        camera_depths=[torch.full((1, 1, 32, 32), 0.7)],
-        camera_depth_valid_masks=[torch.ones(1, 1, 32, 32, dtype=torch.bool)],
-        position_embedding=[torch.zeros(1, 6, 16, 16)],
-        goal=[torch.zeros(1, 6)],
-        twist=[torch.zeros(1, 3)],
-        delta_poses=[torch.zeros(1, 3)],
+        camera_images=[torch.randn(1, 3, 32, 32), torch.randn(1, 3, 32, 32)],
+        camera_depths=[torch.full((1, 1, 32, 32), 0.7)] * 2,
+        camera_depth_valid_masks=[torch.ones(1, 1, 32, 32, dtype=torch.bool)] * 2,
+        position_embedding=[torch.zeros(1, 6, 16, 16)] * 2,
+        goal=[torch.zeros(1, 6)] * 2,
+        twist=[torch.tensor([[0.5, 0.0, 0.1]]), torch.tensor([[0.2, 0.1, 0.0]])],
+        delta_poses=[torch.zeros(1, 3)] * 2,
+        future_trajectory=[torch.zeros(20, 7), torch.zeros(20, 7)],
+        occupancy=[torch.zeros(1, 3, 8, 8)] * 2,
+        clearance=[torch.zeros(1, 1, 8, 8)] * 2,
+        traversability=[torch.zeros(1, 1, 8, 8, dtype=torch.bool)] * 2,
         mode="loss",
     )
-    assert set(loss_dict) == {"loss_depth"}
-    loss_dict["loss_depth"].backward()
     assert all(
-        parameter.grad is not None and torch.isfinite(parameter.grad).all()
-        for parameter in model.depth_head.parameters()
+        key.startswith("loss_") for key in loss_dict if "loss" in key
     )
+    total, _ = model.parse_losses(loss_dict)
+    assert torch.isfinite(total)
+    total.backward()
+    for module in (model.depth_head, model.trajectory_head):
+        for name, parameter in module.named_parameters():
+            assert parameter.grad is not None, (module, name)
+            assert torch.isfinite(parameter.grad).all(), (module, name)
+            assert torch.count_nonzero(parameter.grad) > 0, (module, name)

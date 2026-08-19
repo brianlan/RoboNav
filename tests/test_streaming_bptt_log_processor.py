@@ -1,4 +1,5 @@
 import os
+import re
 import types
 
 from mmengine.config import Config
@@ -64,3 +65,9 @@ def test_log_processor_registry_and_config_build():
     processor = PREFUSION_LOG_PROCESSORS.build(config.log_processor)
     assert isinstance(processor, StreamingSequenceBPTTLogProcessor)
     assert processor.tabulate_ncols == 5
+    # *_raw values must share the loss smoothing window so weight-1 terms
+    # display consistently; ordinary metrics stay instantaneous
+    assert re.search(processor.mean_pattern, "traj_xy_raw")
+    assert re.search(processor.mean_pattern, "loss_traj_xy")
+    assert re.search(processor.mean_pattern, "time")
+    assert not re.search(processor.mean_pattern, "ADE")
