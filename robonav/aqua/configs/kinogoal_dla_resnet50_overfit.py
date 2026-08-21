@@ -283,9 +283,9 @@ optim_wrapper = dict(
     ),
     paramwise_cfg=dict(
         custom_keys={
-            "img_backbone": dict(
-                lr_mult=0.25
-            ),  # 0.25 only for Focal-PETR with R50-in1k pretrained weights
+            "backbone": dict(
+                lr_mult=0.8
+            ),
         }
     ),
     clip_grad=dict(max_norm=35, norm_type=2),

@@ -1,6 +1,6 @@
 import datetime
 
-experiment_name = "kinogoal_dla_resnet18_overfit"
+experiment_name = "kinogoal_dla_resnet50_sage3d_901scn"
 today = datetime.datetime.now().strftime("%m%d")
 
 custom_imports = dict(
@@ -19,9 +19,9 @@ backend_args = None
 # Add this to enable unused parameter detection for DDP
 find_unused_parameters = True
 
-num_gpus = 1
-batch_size = 2
-num_epochs = 200
+num_gpus = 7
+batch_size = 4
+num_epochs = 10
 possible_sequence_lengths = [20]
 
 # Single source for the depth range: used by both CameraDepthTensor
@@ -88,23 +88,23 @@ model_feeder = dict(
 train_dataset = dict(
     type="StreamingSequenceBatchDataset",
     name="MvParkingTest",
-    data_root="/ssd5/datasets/kino-goal-nav/prefusion",
-    info_path="/ssd5/datasets/kino-goal-nav/prefusion/sage3d-839920-000018/info.pkl",
+    data_root="/data/datasets/kino-goal-nav/prefusion",
+    info_path="/data/datasets/kino-goal-nav/prefusion/prefusion_2scn.pkl",
     model_feeder=model_feeder,
     transformables=transformables,
     transforms=[
         dict(type="BGR2RGB"),
         dict(type="RenderVirtualCamera", camera_settings=camera_settings),
         # dict(type="RandomRenderExtrinsic", angles=[2, 2, 2]),
-        # dict(type="RandomTranslateSpace", translation=(0.1, 0.1, 0)),
-        # dict(type="RandomRotateSpace", angles=(0, 0, 90), prob_inverse_cameras_rotation=0),
-        # dict(type="RandomMirrorSpace"),
-        # dict(type="RandomImageISP", prob=0.1),
+        dict(type="RandomTranslateSpace", translation=(0.1, 0.1, 0)),
+        dict(type="RandomRotateSpace", angles=(0, 0, 90), prob_inverse_cameras_rotation=0),
+        dict(type="RandomMirrorSpace"),
+        dict(type="RandomImageISP", prob=0.05),
         # dict(type="RandomSetIntrinsicParam", prob=0.1, jitter_ratio=0.01),
         # dict(type="RandomSetExtrinsicParam", prob=0.1, angle=1, translation=0.02),
     ],
     sequence_sampler=dict(
-        type="ValIndexSequenceSampler",
+        type="TrainIndexSequenceSampler",
         possible_sequence_lengths=possible_sequence_lengths,
         possible_frame_intervals=[1],
     ),
@@ -113,8 +113,8 @@ train_dataset = dict(
 val_dataset = dict(
     type="SequenceBatchDataset",
     name="MvParkingTest",
-    data_root="/ssd5/datasets/kino-goal-nav/prefusion",
-    info_path="/ssd5/datasets/kino-goal-nav/prefusion/sage3d-839920-000018/info.pkl",
+    data_root="/data/datasets/kino-goal-nav/prefusion",
+    info_path="/data/datasets/kino-goal-nav/prefusion/sage3d-839920-000018/info.pkl",
     model_feeder=model_feeder,
     transformables=transformables,
     transforms=[
@@ -132,8 +132,8 @@ val_dataset = dict(
 test_dataset = dict(
     type="SequenceBatchDataset",
     name="MvParkingTest",
-    data_root="/ssd5/datasets/kino-goal-nav/prefusion",
-    info_path="/ssd5/datasets/kino-goal-nav/prefusion/sage3d-839920-000018/info.pkl",
+    data_root="/data/datasets/kino-goal-nav/prefusion",
+    info_path="/data/datasets/kino-goal-nav/prefusion/prefusion_2scn.pkl",
     model_feeder=model_feeder,
     transformables=transformables,
     transforms=[
@@ -153,14 +153,15 @@ train_dataloader = dict(
         type="DefaultSampler", shuffle=False
     ),  # shuffle handled by batch_sampler
     batch_sampler=dict(
-        type="AlignedTimestepBatchSampler", shuffle=True, drop_last=False, seed=0
+        type="AlignedTimestepBatchSampler", shuffle=True, drop_last=True, seed=0
     ),
     collate_fn=dict(type="StreamingCollate"),
     dataset=train_dataset,
 )
 
 val_dataloader = dict(
-    num_workers=0,
+    num_workers=8,
+    persistent_workers=False,
     sampler=dict(type="DefaultSampler", shuffle=False, round_up=True),
     collate_fn=dict(type="collate_dict"),
     dataset=val_dataset,
@@ -196,7 +197,7 @@ model = dict(
         device="cuda",
     ),
     backbone=dict(
-        type="robonav.AquaResNet18D",
+        type="robonav.AquaResNet50D",
         features_only=True,
         pretrained=True,
         out_indices=(1, 2, 3, 4),
@@ -206,8 +207,8 @@ model = dict(
     ),
     feature_modulation=dict(
         type="robonav.FeatureModulation",
-        f4_chans=512,
-        f3_chans=256,
+        f4_chans=2048,
+        f3_chans=1024,
         out_chans=256,
     ),
     temporal_fuser=dict(
@@ -217,10 +218,10 @@ model = dict(
     ),
     depth_head=dict(
         type="robonav.DepthHead",
-        f4_chans=512,
-        f3_chans=256,
-        f2_chans=128,
-        f1_chans=64,
+        f4_chans=2048,
+        f3_chans=1024,
+        f2_chans=512,
+        f1_chans=256,
         decoder_chans=64,
     ),
     loss=dict(
@@ -299,10 +300,10 @@ param_scheduler = [
         end_factor=1,
         by_epoch=False,
         begin=0,
-        end=100,
+        end=500,
     ),  # warmup
     dict(
-        type="CosineAnnealingLR", by_epoch=False, begin=100, eta_min=1e-5
+        type="CosineAnnealingLR", by_epoch=False, begin=500, eta_min=1e-5
     ),  # main LR Scheduler
     # dict(type='PolyLR', by_epoch=False, begin=0, eta_min=0, power=1.0) # main LR Scheduler
 ]
