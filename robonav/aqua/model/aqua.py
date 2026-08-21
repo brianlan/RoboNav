@@ -33,34 +33,27 @@ class AquaNet(BaseModel):
     def reset(self):
         self.temporal_fuser.reset()
 
-    def train_step(self, data, optim_wrapper):
-        """Full-sequence BPTT: ``data`` is one sequence of aligned frame
-        microbatches. Forward every frame while retaining the graph, parse
-        each frame's loss dict, average over time, then call backward and
-        step the optimizer once."""
-        with optim_wrapper.optim_context(self):
-            parsed = self._run_training_sequence(data)
-            loss = torch.stack([scalar for scalar, _ in parsed]).mean()
-        log_vars = {
-            key: sum(frame_vars[key] for _, frame_vars in parsed) / len(parsed)
-            for key in parsed[0][1]
+    def forward(self, *, sequence=None, mode="loss", **frame):
+        if sequence is not None:
+            return self._forward_sequence(sequence, mode)
+        return self._forward_frame(mode=mode, **frame)
+
+    def _forward_sequence(self, sequence, mode):
+        """Full-sequence BPTT behind the default ``train_step`` (single- and
+        multi-GPU): forward every frame in order while retaining the graph,
+        then average every loss and metric key over time. Resetting at both
+        ends keeps the recurrent state sequence-local; the surrounding
+        ``train_step`` parses the averaged dict and performs exactly one
+        backward and one optimizer step per sequence."""
+        self.reset()
+        frame_outputs = [self._forward_frame(mode=mode, **frame) for frame in sequence]
+        self.reset()
+        return {
+            key: torch.stack([output[key] for output in frame_outputs]).mean()
+            for key in frame_outputs[0]
         }
-        # parse_losses overwrites its inserted 'loss' entry when the frame
-        # dict has a literal 'loss' key; report the actual optimized scalar.
-        log_vars["loss"] = loss
-        optim_wrapper.update_params(loss)
-        self.reset()
-        return log_vars
 
-    def _run_training_sequence(self, data):
-        sequence = [self.data_preprocessor(frame, True) for frame in data]
-        self.reset()
-        return [
-            self.parse_losses(self._run_forward(frame, mode="loss"))
-            for frame in sequence
-        ]
-
-    def forward(
+    def _forward_frame(
         self,
         *,
         index_info=None,

@@ -16,7 +16,18 @@ class FrameBatchMerger(BaseDataPreprocessor):
         self._device = device
 
     def forward(
-        self, data: list[dict[str, Any]], training: bool = False
+        self, data: list[list[dict[str, Any]]] | list[dict[str, Any]],
+        training: bool = False,
+    ) -> dict[str, Any]:
+        if training:
+            # Training data is one sequence of frame batches: merge every
+            # frame separately and return an explicit sequence keyword for
+            # the model's full-sequence BPTT forward.
+            return {"sequence": [self._merge_frame(frame) for frame in data]}
+        return self._merge_frame(data)
+
+    def _merge_frame(
+        self, data: list[dict[str, Any]]
     ) -> dict[str, list[Any]]:
         merged = {}
         for key in data[0].keys():
