@@ -89,7 +89,7 @@ train_dataset = dict(
     type="StreamingSequenceBatchDataset",
     name="MvParkingTest",
     data_root="/data/datasets/kino-goal-nav/prefusion",
-    info_path="/data/datasets/kino-goal-nav/prefusion/prefusion_2scn.pkl",
+    info_path="/data/datasets/kino-goal-nav/prefusion_2scn.pkl",
     model_feeder=model_feeder,
     transformables=transformables,
     transforms=[
@@ -133,7 +133,7 @@ test_dataset = dict(
     type="SequenceBatchDataset",
     name="MvParkingTest",
     data_root="/data/datasets/kino-goal-nav/prefusion",
-    info_path="/data/datasets/kino-goal-nav/prefusion/prefusion_2scn.pkl",
+    info_path="/data/datasets/kino-goal-nav/prefusion_2scn.pkl",
     model_feeder=model_feeder,
     transformables=transformables,
     transforms=[
@@ -162,11 +162,10 @@ train_dataloader = dict(
 val_dataloader = dict(
     num_workers=8,
     persistent_workers=False,
+    pin_memory=True,
     sampler=dict(type="DefaultSampler", shuffle=False, round_up=True),
     collate_fn=dict(type="collate_dict"),
     dataset=val_dataset,
-    persistent_workers=False,
-    pin_memory=True,
 )
 
 test_dataloader = dict(
@@ -300,10 +299,10 @@ param_scheduler = [
         end_factor=1,
         by_epoch=False,
         begin=0,
-        end=500,
+        end=100,
     ),  # warmup
     dict(
-        type="CosineAnnealingLR", by_epoch=False, begin=500, eta_min=1e-5
+        type="CosineAnnealingLR", by_epoch=False, begin=100, eta_min=1e-5
     ),  # main LR Scheduler
     # dict(type='PolyLR', by_epoch=False, begin=0, eta_min=0, power=1.0) # main LR Scheduler
 ]
