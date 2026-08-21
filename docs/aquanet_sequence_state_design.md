@@ -140,6 +140,10 @@ This is real behavior variation at the sampler Seam, not a speculative abstracti
 
 `index_info` is mandatory in the normal Prefusion data path. Missing metadata is unsupported; no fallback reset policy will be added. A missing required field should fail naturally at the Adapter rather than silently defaulting to reset or continuation.
 
+`IndexInfo` declares `stream_start` as an explicit optional field (`__init__` and `from_str` parameter, default `None`). `None` means the boundary semantics have not been assigned yet; the sequence samplers replace it with a real Python bool. The field is occurrence metadata only: `IndexInfo.__eq__`, `__repr__`, `prev` / `next`, and `as_dict` intentionally do not include it.
+
+A sequence-aware consumer requires its configured `ModelFeeder` to preserve `index_info`. `AquaModelFeeder` does; generic/stateless feeders may omit it. The dataset does not override or reattach feeder output, and no `_meta` duplication or recovery of `index_info` / `stream_start` exists. A feeder that drops `index_info` is therefore an invalid configuration for `FrameBatchMerger` and fails naturally on the missing key at the Adapter. The reviewer proposal to recover `index_info` at the dataset level was considered and rejected as out of scope for this consumer contract: it would add dataset-level bookkeeping and `_meta` duplication for a misconfiguration, contradicting the rule that the feeder owns the model-input contract.
+
 `q_prev` and `s_prev` remain useful data-topology links, but recurrent-state lifetime must not rely on `prev = q_prev or s_prev`. A nullable `q_prev` cannot distinguish “no sequence context” from “first occurrence in a sequence,” especially if an occurrence carries both scene and sequence links.
 
 ## Implemented cross-repository changes
@@ -151,8 +155,8 @@ Repository: `/home/rlan/projects/prefusion`
 Branch: `fix/sequence-stream-start` (from clean `main` at `a57cc4b` (`v2.4.6`)).
 
 1. Every sampled sequence owns independent `IndexInfo` occurrences before q-links are established. `establish_isolated_sequence_occurrences()` at the linking/sampling seam shallow-copies each occurrence (scene `s_prev` / `s_next` preserved, stale q-links cleared) and q-links the copies, so no sampled sequence can overwrite another's links; repeated padded occurrences each get their own object and cannot self-loop. The helper is not exported through `__all__`.
-2. Explicit occurrence-level `stream_start` metadata is part of the sampler output contract. Train/validation mark sequence position zero; sequential-scene sampling marks only scene starts. The representation is a plain `stream_start` attribute on the sampled `IndexInfo` occurrence; `ClassBalancedSequenceSampler` inherits the semantics from its base `TrainIndexSequenceSampler`, and deep-copied oversampled duplicates preserve the markers.
-3. The existing `index_info` requirement is unchanged; the metadata rides `index_info` through both `StreamingSequenceBatchDataset` and `SequenceBatchDataset` paths without adding fallback behavior.
+2. Explicit occurrence-level `stream_start` metadata is part of the sampler output contract. Train/validation mark sequence position zero; sequential-scene sampling marks only scene starts. The representation is an explicit optional `stream_start` field on `IndexInfo` (constructor and `from_str` parameter, default `None`), which the samplers replace with a real bool; `ClassBalancedSequenceSampler` inherits the semantics from its base `TrainIndexSequenceSampler`, and deep-copied oversampled duplicates preserve the markers.
+3. The existing `index_info` requirement is unchanged. With the configured `AquaModelFeeder`, the metadata rides `index_info` through the streaming and sequence-batch paths; generic feeders remain responsible for their own model-input interface, and there is no dataset fallback.
 4. Focused tests added:
    - overlapping sequences have independent, complete q-chains;
    - padded/repeated occurrences do not create self-loops;
@@ -163,14 +167,14 @@ Branch: `fix/sequence-stream-start` (from clean `main` at `a57cc4b` (`v2.4.6`)).
    - class-balanced oversampling preserves `stream_start` semantics.
 5. The Prefusion dataset/sampler test set and the feasible full suite have been run (see [Verification](#verification-current-revision)).
 
-The exact representation is the minimal one: an explicit `stream_start` attribute on the sampled `IndexInfo` occurrence, because RoboNav's feeder already preserves `index_info`. No wrapper type was introduced.
+The exact representation is the minimal one: an explicit optional `stream_start` field on the sampled `IndexInfo` occurrence, because RoboNav's feeder already preserves `index_info`. No wrapper type was introduced.
 
 ### RoboNav repository
 
 Repository: `/data/home/rlan/projects/RoboNav`
 
 1. `FrameBatchMerger` no longer uses `training` as a data-shape discriminator. `StreamingSequenceBPTTTrainLoop` passes an explicit `{"sequence": [...]}` raw envelope; the merger dispatches on that field and merges each inner frame batch.
-2. `FrameBatchMerger._merge_frame()` reads the Prefusion occurrence's explicit `stream_start`, verifies that all samples in a time-aligned frame batch agree (disagreement raises `ValueError` instead of silently corrupting recurrent state), and emits one batch-level boolean. A missing required field fails naturally at this Adapter seam.
+2. `FrameBatchMerger._merge_frame()` reads the Prefusion occurrence's explicit `stream_start`, requires every occurrence to carry a real bool (unassigned `None` is rejected, not coerced), verifies that all samples in a time-aligned frame batch agree (disagreement raises `ValueError` instead of silently corrupting recurrent state), and emits one batch-level boolean. A missing required field fails naturally at this Adapter seam.
 3. AquaNet's frame Interface accepts `stream_start`; `_forward_frame()` resets immediately before processing a starting frame.
 4. `forward(sequence=...)` stays self-contained: it resets at finite-sequence boundaries and ignores per-frame `stream_start` without mutating the processed frame dicts, so the first frame is not reset twice.
 5. `AquaSequenceValLoop` no longer resets; the first frame's boundary signal drives the model-owned reset.
@@ -185,22 +189,19 @@ Repository: `/data/home/rlan/projects/RoboNav`
 
 ## Feasibility and operational constraints
 
-- RoboNav is on `master` at `4cc9a65`.
-- Prefusion implements the changes on branch `fix/sequence-stream-start` (from clean `main` at `a57cc4b` (`v2.4.6`)).
-- The configured Python environment imports Prefusion from a regular copy in `.../site-packages`, NOT from `/home/rlan/projects/prefusion`. Cross-repository integration tests therefore require `PYTHONPATH` to include the Prefusion working tree; real runs require installing the Prefusion branch or a release build.
-- SSH authentication to `github.com` succeeds as `brianlan`; branch creation, commit, and push are feasible.
-- The environment currently has neither the `gh` CLI nor a GitHub API token. It can push the branch and produce the GitHub compare/PR URL, but cannot automatically submit the PR until `gh` is installed/authenticated or another authenticated PR mechanism is provided.
+- RoboNav implements the changes on branch `fix/aquanet-sequence-stream-start` with open PR https://github.com/brianlan/RoboNav/pull/1.
+- Prefusion implements the changes on branch `fix/sequence-stream-start` (from clean `main` at `a57cc4b` (`v2.4.6`)) with open PR https://github.com/Auto-AI-Ragtag/prefusion/pull/4.
+- SSH authentication to `github.com` succeeds as `brianlan`; the `gh` CLI is installed and authenticated, so branch creation, commit, push, and PR creation are available.
 
 ## Verification (current revision)
 
 All results below use `/data/home/rlan/envs/prefusion_py311/bin/python`.
 
-- RoboNav full suite with both working trees on `PYTHONPATH`: `135 passed, 1 skipped` (the skip requires optional `onnx`). Without the Prefusion working tree on the path, one new end-to-end test fails because the site-packages Prefusion copy does not mark `stream_start`; the other 134 tests pass either way.
-- Prefusion focused new tests: `7 passed`.
-- Prefusion focused sampler/dataset set: `106 passed`.
-- Feasible full Prefusion suite: `396 passed, 11 failed` (pre-existing failures unrelated to this change: 5 lidar loader tests and 6 metric AP tests), plus one collection error in `tests/prefusion/utils/test_generate_visiblity.py` because the optional `mtv4d` module is not installed in the environment.
+- RoboNav full suite with both working trees on `PYTHONPATH`: `136 passed, 1 skipped` (the skip requires optional `onnx`).
+- Prefusion affected IndexInfo/sampler/dataset focused set: `109 passed`.
+- Feasible full Prefusion run: `399 passed, 11 failed` (known pre-existing failures unrelated to this change: 5 lidar loader tests and 6 metric AP tests), plus the same collection limitation in `tests/prefusion/utils/test_generate_visiblity.py` because the optional `mtv4d` module is not installed in the environment.
 - Two-rank Gloo DDP coverage (`find_unused_parameters=False` and `True`) passes: one root DDP forward per sequence, gradients equivalent to a global-batch reference, synchronized parameters, and correct gradients for a parameter used only by the first frame.
-- No real NCCL multi-GPU smoke test was run in this revision: no committed smoke-test script exists in the documented workflow, and real training was not started.
+- No real NCCL multi-GPU smoke test was rerun: no committed smoke-test script exists in the documented workflow, and real training was not started.
 
 ## Decision summary
 

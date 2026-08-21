@@ -35,15 +35,18 @@ class FrameBatchMerger(BaseDataPreprocessor):
         for key in data[0].keys():
             merged[key] = [self._cast_data(i[key]) for i in data]
         # Adapter seam: one batch-level recurrent-state boundary from the
-        # Prefusion occurrences. All samples of a time-aligned frame batch
-        # must agree; disagreement would silently corrupt recurrent state.
-        starts = {index_info.stream_start for index_info in merged["index_info"]}
-        if len(starts) != 1:
+        # Prefusion occurrences. Every occurrence must carry a real bool
+        # (None means unassigned and must not be coerced) and all samples of
+        # a time-aligned frame batch must agree; None or mixed values would
+        # silently corrupt recurrent state. A missing index_info key fails
+        # naturally at the required lookup below.
+        starts = [index_info.stream_start for index_info in merged["index_info"]]
+        if not all(isinstance(start, bool) for start in starts) or len(set(starts)) != 1:
             raise ValueError(
-                "stream_start must agree across a recurrent frame batch, got "
-                f"{[index_info.stream_start for index_info in merged['index_info']]}"
+                "stream_start must agree across a recurrent frame batch and be a real bool, got "
+                f"{starts}"
             )
-        merged["stream_start"] = bool(starts.pop())
+        merged["stream_start"] = starts[0]
         return merged
 
     def _cast_data(self, data: Any):

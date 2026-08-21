@@ -290,9 +290,7 @@ class FakeSequenceDataLoader:
 
 def _occurrence(stream_start=False):
     """Minimal Prefusion IndexInfo occurrence honoring the sampler contract."""
-    occurrence = IndexInfo("scene", "frame")
-    occurrence.stream_start = stream_start
-    return occurrence
+    return IndexInfo("scene", "frame", stream_start=stream_start)
 
 
 def _frame(batch, stream_start=False):

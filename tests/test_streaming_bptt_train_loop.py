@@ -43,9 +43,7 @@ class FakeFuser(torch.nn.Module):
 
 def _occurrence(stream_start=False):
     """Minimal Prefusion IndexInfo occurrence honoring the sampler contract."""
-    occurrence = IndexInfo("scene", "frame")
-    occurrence.stream_start = stream_start
-    return occurrence
+    return IndexInfo("scene", "frame", stream_start=stream_start)
 
 
 def _frame(x, stream_start=False):
@@ -216,6 +214,18 @@ def test_frame_batch_merger_rejects_mixed_stream_start():
     frame = [
         {"x": torch.ones(2), "index_info": _occurrence(True)},
         {"x": torch.zeros(2), "index_info": _occurrence(False)},
+    ]
+    with pytest.raises(ValueError, match="stream_start must agree"):
+        merger(frame, False)
+
+
+def test_frame_batch_merger_rejects_unassigned_stream_start():
+    """None means boundary semantics were never assigned; it must not be
+    coerced to False."""
+    merger = FrameBatchMerger(device="cpu")
+    frame = [
+        {"x": torch.ones(2), "index_info": IndexInfo("scene", "frame")},
+        {"x": torch.zeros(2), "index_info": IndexInfo("scene", "frame")},
     ]
     with pytest.raises(ValueError, match="stream_start must agree"):
         merger(frame, False)
