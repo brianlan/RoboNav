@@ -5,10 +5,13 @@ import types
 import pytest
 import torch
 from mmengine.config import Config
+from prefusion.dataset.sequence_sampler import SequentialSceneFrameSequenceSampler
+from prefusion.dataset.utils import PolarDict
 
 from robonav.aqua.hook.eval import AquaTrajectoryEvalHook
 from robonav.aqua.model.aqua import AquaNet
 from robonav.aqua.model.trajectory_head import TrajectoryHead
+from robonav.common.model.data_preprocessor import FrameBatchMerger
 
 DELTA_T = 0.1
 
@@ -28,9 +31,11 @@ class _StubTemporalFuser(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.state = None
+        self.reset_count = 0
 
     def reset(self):
         self.state = None
+        self.reset_count += 1
 
     def forward(self, f3g, twist, delta_poses, goal):
         batch = twist.shape[0]
@@ -73,6 +78,19 @@ def _forward_inputs(batch):
     )
 
 
+def _test_sample(index_info):
+    """One raw per-sample dict as AquaModelFeeder delivers it (single
+    tensors per sample; FrameBatchMerger builds the per-key lists)."""
+    return dict(
+        camera_images=torch.randn(1, 3, 8, 8),
+        position_embedding=torch.randn(1, 6, 4, 4),
+        goal=torch.randn(6),
+        twist=torch.randn(3),
+        delta_poses=torch.zeros(3),
+        index_info=index_info,
+    )
+
+
 def test_tensor_mode_returns_trajectory():
     num_steps = 5
     model = StubAquaNet(num_steps)
@@ -100,19 +118,47 @@ def _batch(scene_id):
     ]
 
 
-def test_resets_before_test_and_on_scene_transition():
+def test_hook_no_longer_resets_the_model():
+    """Reset ownership moved to AquaNet via stream_start; the hook keeps
+    metric behavior only and never calls model.reset()."""
     hook = AquaTrajectoryEvalHook()
     model = ResetCountingModel()
     runner = types.SimpleNamespace(model=model)
 
     hook.before_test(runner)
-    assert model.reset_count == 1
-    hook.before_test_iter(runner, 0, _batch("A"))
-    assert model.reset_count == 2  # first frame of scene A
-    hook.before_test_iter(runner, 1, _batch("A"))
-    assert model.reset_count == 2  # same scene, no reset
-    hook.before_test_iter(runner, 2, _batch("B"))
-    assert model.reset_count == 3  # new scene
+    assert model.reset_count == 0
+    # scene-tracking (and with it the per-scene reset) is gone entirely:
+    # the class no longer overrides the base no-op before_test_iter
+    assert "before_test_iter" not in vars(AquaTrajectoryEvalHook)
+    assert not hasattr(hook, "_scene_id")
+
+
+def test_scene_stream_resets_once_per_scene_via_stream_start():
+    """End-to-end test contract: the Prefusion sequential-scene sampler
+    marks scene starts on singleton occurrences, FrameBatchMerger adapts
+    them to a batch-level stream_start, and AquaNet resets exactly once per
+    scene while state continues across singleton dataset sequences."""
+    frame_info = PolarDict(
+        {
+            "ScnA/0": None,
+            "ScnA/1": None,
+            "ScnA/2": None,
+            "ScnB/0": None,
+            "ScnB/1": None,
+        }
+    )
+    singletons = SequentialSceneFrameSequenceSampler().sample(None, frame_info)
+    assert [seq[0].stream_start for seq in singletons] == [True, False, False, True, False]
+
+    model = StubAquaNet(num_steps=2)
+    model.data_preprocessor = FrameBatchMerger(device="cpu")
+
+    for singleton in singletons:
+        frame_batch = [_test_sample(singleton[0])]
+        model.test_step(frame_batch)
+
+    # two scenes -> exactly two model resets, none mid-scene
+    assert model.temporal_fuser.reset_count == 2
 
 
 def _seven(xy, yaw, vel, omega, q_scale=1.0):

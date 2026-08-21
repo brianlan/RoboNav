@@ -16,22 +16,34 @@ class FrameBatchMerger(BaseDataPreprocessor):
         self._device = device
 
     def forward(
-        self, data: list[list[dict[str, Any]]] | list[dict[str, Any]],
+        self,
+        data: dict[str, Any] | list[dict[str, Any]],
         training: bool = False,
     ) -> dict[str, Any]:
-        if training:
-            # Training data is one sequence of frame batches: merge every
-            # frame separately and return an explicit sequence keyword for
-            # the model's full-sequence BPTT forward.
-            return {"sequence": [self._merge_frame(frame) for frame in data]}
+        if isinstance(data, dict) and "sequence" in data:
+            # Explicit sequence envelope from StreamingSequenceBPTTTrainLoop:
+            # merge every frame separately and return an explicit sequence
+            # keyword for the model's full-sequence BPTT forward. Dispatch is
+            # by input field, never by the training flag.
+            return {"sequence": [self._merge_frame(frame) for frame in data["sequence"]]}
         return self._merge_frame(data)
 
     def _merge_frame(
         self, data: list[dict[str, Any]]
-    ) -> dict[str, list[Any]]:
+    ) -> dict[str, list[Any] | bool]:
         merged = {}
         for key in data[0].keys():
             merged[key] = [self._cast_data(i[key]) for i in data]
+        # Adapter seam: one batch-level recurrent-state boundary from the
+        # Prefusion occurrences. All samples of a time-aligned frame batch
+        # must agree; disagreement would silently corrupt recurrent state.
+        starts = {index_info.stream_start for index_info in merged["index_info"]}
+        if len(starts) != 1:
+            raise ValueError(
+                "stream_start must agree across a recurrent frame batch, got "
+                f"{[index_info.stream_start for index_info in merged['index_info']]}"
+            )
+        merged["stream_start"] = bool(starts.pop())
         return merged
 
     def _cast_data(self, data: Any):

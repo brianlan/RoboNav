@@ -15,8 +15,9 @@ class StreamingSequenceBPTTTrainLoop(StreamingSequenceBatchTrainLoop):
 
     Unlike ``StreamingSequenceBatchTrainLoop`` (one optimizer step per frame
     microbatch), one loop iteration consumes one whole sequence of aligned
-    frame microbatches and calls ``model.train_step`` once with the nested
-    sequence, so the model can backpropagate through time.
+    frame microbatches and calls ``model.train_step`` once with an explicit
+    ``{"sequence": [...]}`` envelope, so the model can backpropagate through
+    time.
     """
 
     def __init__(
@@ -44,10 +45,13 @@ class StreamingSequenceBPTTTrainLoop(StreamingSequenceBatchTrainLoop):
             self.dataloader.dataset.set_epoch(self.epoch)
 
         sequence_length = self.dataloader.dataset.sequence_length
-        frames = iter(self.dataloader)
+        microbatches = iter(self.dataloader)
         for seq_idx in range(len(self.dataloader)):
-            sequence = [next(frames) for _ in range(sequence_length)]
-            self.run_iter(seq_idx, sequence)
+            # explicit raw-sequence envelope: the data preprocessor merges
+            # each inner frame batch and the model forwards the whole
+            # sequence as one BPTT unit
+            envelope = {"sequence": [next(microbatches) for _ in range(sequence_length)]}
+            self.run_iter(seq_idx, envelope)
 
         if hasattr(self.dataloader.dataset, "post_epoch_processing"):
             self.dataloader.dataset.post_epoch_processing()
@@ -61,8 +65,9 @@ class AquaSequenceValLoop(ValLoop):
     """Validation over ``SequenceBatchDataset`` sequence batches.
 
     Each dataloader item is one sequence batch (a list of frame
-    batches): the recurrent model is reset once per sequence batch,
-    then every frame is processed in order through the standard
+    batches). The recurrent model resets itself when a frame batch
+    carrying ``stream_start`` arrives (first frame of each validation
+    clip); every frame is processed in order through the standard
     ``val_step`` (mode="predict") path with one ``run_iter`` (and its
     hooks) per frame, using flattened indices like Prefusion's
     ``SequenceBatchValLoop``. Each rank owns its SRU state; states are
@@ -90,17 +95,8 @@ class AquaSequenceValLoop(ValLoop):
         return metrics
 
     def _run_sequence(self, sequence_idx, sequence_batch, sequence_length):
-        self._reset_model()
         for frame_idx, frame_batch in enumerate(sequence_batch):
             self.run_iter(sequence_idx * sequence_length + frame_idx, frame_batch)
-
-    def _reset_model(self):
-        model = (
-            self.runner.model.module
-            if hasattr(self.runner.model, "module")
-            else self.runner.model
-        )
-        model.reset()
 
     @torch.no_grad()
     def run_iter(self, idx, frame_batch):

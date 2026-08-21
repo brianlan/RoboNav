@@ -4,6 +4,7 @@ import pytest
 import torch
 from mmengine.model import MMDistributedDataParallel
 from mmengine.optim import OptimWrapper
+from prefusion.dataset.index_info import IndexInfo
 
 from robonav.aqua.model.aqua import AquaNet
 from robonav.aqua.runner.loop import StreamingSequenceBPTTTrainLoop
@@ -21,10 +22,12 @@ class FakeFuser(torch.nn.Module):
         self.state_at_entry = []
         self.state_grads = []
         self.states_out = []
+        self.reset_count = 0
 
     def reset(self):
         self.state = None
         self.frame = 0
+        self.reset_count += 1
 
     def forward(self, x):
         self.state_at_entry.append(self.state)
@@ -38,9 +41,16 @@ class FakeFuser(torch.nn.Module):
         return state
 
 
-def _frame(x):
+def _occurrence(stream_start=False):
+    """Minimal Prefusion IndexInfo occurrence honoring the sampler contract."""
+    occurrence = IndexInfo("scene", "frame")
+    occurrence.stream_start = stream_start
+    return occurrence
+
+
+def _frame(x, stream_start=False):
     """One frame microbatch: a single-sample dict with tensor ``x``."""
-    return [{"x": x}]
+    return [{"x": x, "index_info": _occurrence(stream_start)}]
 
 
 class FakeBPTTModel(AquaNet):
@@ -158,34 +168,57 @@ class FakeDataLoader:
 def test_frame_batch_merger_merges_single_frame_batch():
     merger = FrameBatchMerger(device="cpu")
     frame = [
-        {"x": torch.ones(2), "meta": 1},
-        {"x": torch.zeros(2), "meta": 2},
+        {"x": torch.ones(2), "meta": 1, "index_info": _occurrence(True)},
+        {"x": torch.zeros(2), "meta": 2, "index_info": _occurrence(True)},
     ]
     merged = merger(frame, False)
-    assert set(merged) == {"x", "meta"}
+    assert set(merged) == {"x", "meta", "index_info", "stream_start"}
     torch.testing.assert_close(merged["x"][0], torch.ones(2))
     torch.testing.assert_close(merged["x"][1], torch.zeros(2))
     assert merged["meta"] == [1, 2]
+    assert merged["stream_start"] is True
     # float64 inputs are cast to float32 like any other float dtype
-    assert merger([{"x": torch.ones(1, dtype=torch.float64)}], False)["x"][
+    assert merger([{"x": torch.ones(1, dtype=torch.float64), "index_info": _occurrence()}], False)["x"][
         0
     ].dtype == torch.float32
 
 
-def test_frame_batch_merger_training_merges_nested_sequence():
+def test_frame_batch_merger_merges_nested_sequence_envelope():
     merger = FrameBatchMerger(device="cpu")
-    sequence = [
-        [{"x": torch.ones(2)}, {"x": 2.0 * torch.ones(2)}],
-        [{"x": torch.zeros(2)}, {"x": 3.0 * torch.ones(2)}],
+    envelope = {
+        "sequence": [
+            [
+                {"x": torch.ones(2), "index_info": _occurrence(True)},
+                {"x": 2.0 * torch.ones(2), "index_info": _occurrence(True)},
+            ],
+            [
+                {"x": torch.zeros(2), "index_info": _occurrence()},
+                {"x": 3.0 * torch.ones(2), "index_info": _occurrence()},
+            ],
+        ]
+    }
+    # dispatch is by the explicit envelope field, not the training flag
+    for training in (False, True):
+        out = merger(envelope, training)
+        # explicit sequence keyword dict, one independently merged dict per frame
+        assert set(out) == {"sequence"}
+        assert len(out["sequence"]) == 2
+        torch.testing.assert_close(out["sequence"][0]["x"][0], torch.ones(2))
+        torch.testing.assert_close(out["sequence"][0]["x"][1], 2.0 * torch.ones(2))
+        torch.testing.assert_close(out["sequence"][1]["x"][0], torch.zeros(2))
+        torch.testing.assert_close(out["sequence"][1]["x"][1], 3.0 * torch.ones(2))
+        assert out["sequence"][0]["stream_start"] is True
+        assert out["sequence"][1]["stream_start"] is False
+
+
+def test_frame_batch_merger_rejects_mixed_stream_start():
+    merger = FrameBatchMerger(device="cpu")
+    frame = [
+        {"x": torch.ones(2), "index_info": _occurrence(True)},
+        {"x": torch.zeros(2), "index_info": _occurrence(False)},
     ]
-    out = merger(sequence, True)
-    # explicit sequence keyword dict, one independently merged dict per frame
-    assert set(out) == {"sequence"}
-    assert len(out["sequence"]) == 2
-    torch.testing.assert_close(out["sequence"][0]["x"][0], torch.ones(2))
-    torch.testing.assert_close(out["sequence"][0]["x"][1], 2.0 * torch.ones(2))
-    torch.testing.assert_close(out["sequence"][1]["x"][0], torch.zeros(2))
-    torch.testing.assert_close(out["sequence"][1]["x"][1], 3.0 * torch.ones(2))
+    with pytest.raises(ValueError, match="stream_start must agree"):
+        merger(frame, False)
 
 
 # ---------------------------------------------------------------------------
@@ -197,8 +230,8 @@ def test_bptt_loop_end_to_end():
     T = 3
     # Second sequence deliberately has a different batch size.
     sequences = [
-        [_frame(torch.randn(2, 4)) for _ in range(T)],
-        [_frame(torch.randn(3, 4)) for _ in range(T)],
+        [_frame(torch.randn(2, 4), stream_start=(t == 0)) for t in range(T)],
+        [_frame(torch.randn(3, 4), stream_start=(t == 0)) for t in range(T)],
     ]
     dataloader = FakeDataLoader(sequences, sequence_length=T)
     model = FakeBPTTModel()
@@ -234,6 +267,9 @@ def test_bptt_loop_end_to_end():
         False,
     ]
     assert fuser.state is None
+    # exactly two resets per sequence (start and end of the finite unit);
+    # the first frame's stream_start marker must not reset a third time
+    assert fuser.reset_count == 4
 
     # Every frame state received a finite gradient; frame 0's only gradient
     # path is through the recurrent state, proving early frames contribute.
@@ -248,9 +284,13 @@ def test_train_step_averages_multiple_loss_keys():
     T = 4
     model = FakeMultiLossModel()
     wrapper = CapturingOptimWrapper(model)
-    frames = [_frame(torch.randn(2, 3)) for _ in range(T)]
+    envelope = {
+        "sequence": [
+            _frame(torch.randn(2, 3), stream_start=(t == 0)) for t in range(T)
+        ]
+    }
 
-    log_vars = model.train_step(frames, wrapper)
+    log_vars = model.train_step(envelope, wrapper)
 
     # Exactly one optimizer update for the whole sequence.
     assert len(wrapper.objectives) == 1
@@ -268,6 +308,27 @@ def test_train_step_averages_multiple_loss_keys():
     assert float(log_vars["acc"]) == (T + 1) / 2
 
 
+def test_sequence_forward_does_not_mutate_stream_start():
+    T = 3
+    model = FakeBPTTModel()
+    raw_envelope = {
+        "sequence": [
+            _frame(torch.randn(1, 2), stream_start=(t == 0)) for t in range(T)
+        ]
+    }
+    # processed frames are the merged dicts that carry the batch-level bool
+    processed = model.data_preprocessor(raw_envelope)["sequence"]
+
+    model(sequence=processed, mode="loss")
+
+    # the finite sequence ignores (does not strip) per-frame stream_start:
+    # the processed frames still retain it after forward
+    assert [frame["stream_start"] for frame in processed] == [True, False, False]
+    assert [
+        [occ.stream_start for occ in frame["index_info"]] for frame in processed
+    ] == [[True], [False], [False]]
+
+
 def test_loop_registered_in_robonav_loops():
     import robonav  # noqa: F401
     from prefusion.registry import LOOPS as PREFUSION_LOOPS
@@ -283,7 +344,8 @@ def test_loop_registered_in_robonav_loops():
 def test_loop_uses_dataset_sequence_length():
     T = 5  # not 20: grouping must come from dataset.sequence_length
     dataloader = FakeDataLoader(
-        [[_frame(torch.randn(1, 4)) for _ in range(T)]], sequence_length=T
+        [[_frame(torch.randn(1, 4), stream_start=(t == 0)) for t in range(T)]],
+        sequence_length=T,
     )
     model = FakeBPTTModel()
     wrapper = CountingOptimWrapper(model)
@@ -295,6 +357,33 @@ def test_loop_uses_dataset_sequence_length():
     assert len(model.frames_seen) == T
 
 
+def test_loop_passes_explicit_sequence_envelope():
+    T = 2
+    frames = [_frame(torch.randn(1, 4), stream_start=(t == 0)) for t in range(T)]
+    dataloader = FakeDataLoader([frames], sequence_length=T)
+    model = FakeBPTTModel()
+    wrapper = CountingOptimWrapper(model)
+    received = []
+    train_step = model.train_step
+
+    def spying_train_step(data, optim_wrapper):
+        received.append(data)
+        return train_step(data, optim_wrapper)
+
+    model.train_step = spying_train_step
+    loop = StreamingSequenceBPTTTrainLoop(
+        FakeRunner(model, wrapper), dataloader, max_epochs=1, val_interval=-1
+    )
+    loop.run_epoch()
+
+    # train_step receives the explicit raw-sequence envelope, not a bare
+    # nested list whose meaning would depend on the training flag
+    assert len(received) == 1
+    (envelope,) = received
+    assert set(envelope) == {"sequence"}
+    assert envelope["sequence"] == frames
+
+
 # ---------------------------------------------------------------------------
 # Distributed default MMDistributedDataParallel.train_step (2-process gloo)
 # ---------------------------------------------------------------------------
@@ -303,7 +392,10 @@ def test_loop_uses_dataset_sequence_length():
 def _rank_frames(rank, T=3):
     """Deterministic per-rank sequence, known to every rank and the main
     process so a global-batch reference can be computed locally."""
-    return [_frame(torch.full((2, 3), float(10 * rank + t + 1))) for t in range(T)]
+    return [
+        _frame(torch.full((2, 3), float(10 * rank + t + 1)), stream_start=(t == 0))
+        for t in range(T)
+    ]
 
 
 def _ddp_worker(rank, world_size, init_file, queue, find_unused):
@@ -324,7 +416,7 @@ def _ddp_worker(rank, world_size, init_file, queue, find_unused):
         return ddp_forward(*args, **kwargs)
 
     ddp.forward = counting_forward
-    ddp.train_step(_rank_frames(rank), wrapper)
+    ddp.train_step({"sequence": _rank_frames(rank)}, wrapper)
     dist.destroy_process_group()
     # plain floats: tensors would be shared through file descriptors that
     # close when the worker exits
@@ -342,7 +434,7 @@ def _global_batch_reference(find_unused, world_size=2, lr=0.1):
     step on the mean loss: DDP's gradient averaging must reproduce it."""
     model = FakeEarlyParamModel() if find_unused else FakeBPTTModel()
     losses = [
-        model(**model.data_preprocessor(_rank_frames(rank), training=True), mode="loss")
+        model(**model.data_preprocessor({"sequence": _rank_frames(rank)}), mode="loss")
         for rank in range(world_size)
     ]
     total = sum(
