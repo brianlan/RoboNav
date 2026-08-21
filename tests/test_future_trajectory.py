@@ -155,7 +155,7 @@ def test_tensor_smith_requires_velocities():
 
 def test_config_wiring_and_registry_build():
     cfg = Config.fromfile(
-        os.path.join(os.path.dirname(__file__), "..", "configs", "kinogoal_dla_resnet18_overfit.py")
+        os.path.join(os.path.dirname(__file__), "..", "robonav", "aqua", "configs", "kinogoal_dla_resnet18_overfit.py")
     )
     ft_cfg = cfg.transformables["future_trajectory"]
     assert ft_cfg["type"] == "robonav.FutureTrajectory"

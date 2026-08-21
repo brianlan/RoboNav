@@ -105,7 +105,7 @@ def test_layer_contract_and_exact_initialization(monkeypatch):
 def test_registry_and_overfit_config_build():
     config = Config.fromfile(
         os.path.join(
-            os.path.dirname(__file__), "..", "configs", "kinogoal_dla_resnet18_overfit.py"
+            os.path.dirname(__file__), "..", "robonav", "aqua", "configs", "kinogoal_dla_resnet18_overfit.py"
         )
     )
     head = MODELS.build(config.model.depth_head)

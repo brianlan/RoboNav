@@ -64,7 +64,7 @@ def _depth_case():
 def test_registry_and_overfit_config_construction():
     config = Config.fromfile(
         os.path.join(
-            os.path.dirname(__file__), "..", "configs", "kinogoal_dla_resnet18_overfit.py"
+            os.path.dirname(__file__), "..", "robonav", "aqua", "configs", "kinogoal_dla_resnet18_overfit.py"
         )
     )
     loss = MODELS.build(config.model.loss)

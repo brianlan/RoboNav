@@ -395,6 +395,8 @@ def test_registry_and_config_wiring():
         os.path.join(
             os.path.dirname(__file__),
             "..",
+            "robonav",
+            "aqua",
             "configs",
             "kinogoal_dla_resnet18_overfit.py",
         )

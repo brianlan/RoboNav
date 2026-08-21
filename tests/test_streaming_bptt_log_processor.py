@@ -53,7 +53,7 @@ def test_sequence_batch_train_size_and_sequence_aware_eval_sizes(monkeypatch):
 def test_log_processor_registry_and_config_build():
     config = Config.fromfile(
         os.path.join(
-            os.path.dirname(__file__), "..", "configs", "kinogoal_dla_resnet18_overfit.py"
+            os.path.dirname(__file__), "..", "robonav", "aqua", "configs", "kinogoal_dla_resnet18_overfit.py"
         )
     )
 

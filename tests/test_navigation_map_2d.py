@@ -177,7 +177,7 @@ def test_feeder_and_config_wiring(tmp_path):
     )
     assert set(out) == {"occupancy", "clearance", "traversability"}
 
-    config = Config.fromfile("configs/kinogoal_dla_resnet18_overfit.py")
+    config = Config.fromfile("robonav/aqua/configs/kinogoal_dla_resnet18_overfit.py")
     wiring = config.transformables.navigation_map_2d
     loader = TRANSFORMABLE_LOADERS.build({**wiring.loader, "data_root": tmp_path})
     smith = TENSOR_SMITHS.build(wiring.tensor_smith)

@@ -228,7 +228,7 @@ def test_hook_registered_and_configured():
     )
 
     cfg = Config.fromfile(
-        os.path.join(os.path.dirname(__file__), "..", "configs", "kinogoal_dla_resnet18_overfit.py")
+        os.path.join(os.path.dirname(__file__), "..", "robonav", "aqua", "configs", "kinogoal_dla_resnet18_overfit.py")
     )
     assert cfg.custom_hooks[0]["type"] == "robonav.AquaTrajectoryEvalHook"
     assert cfg.test_dataset["batch_size"] == 1
