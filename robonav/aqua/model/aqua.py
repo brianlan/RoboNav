@@ -41,12 +41,17 @@ class AquaNet(BaseModel):
     def _forward_sequence(self, sequence, mode):
         """Full-sequence BPTT behind the default ``train_step`` (single- and
         multi-GPU): forward every frame in order while retaining the graph,
-        then average every loss and metric key over time. Resetting at both
-        ends keeps the recurrent state sequence-local; the surrounding
-        ``train_step`` parses the averaged dict and performs exactly one
-        backward and one optimizer step per sequence."""
+        then average every loss and metric key over time. The finite sequence
+        owns its recurrent state: resetting at both ends keeps it
+        sequence-local (per-frame ``stream_start`` is ignored, so the first
+        frame is not reset twice), and the surrounding ``train_step`` parses
+        the averaged dict and performs exactly one backward and one optimizer
+        step per sequence."""
         self.reset()
-        frame_outputs = [self._forward_frame(mode=mode, **frame) for frame in sequence]
+        frame_outputs = [
+            self._forward_frame(mode=mode, **{**frame, "stream_start": False})
+            for frame in sequence
+        ]
         self.reset()
         return {
             key: torch.stack([output[key] for output in frame_outputs]).mean()
@@ -57,6 +62,7 @@ class AquaNet(BaseModel):
         self,
         *,
         index_info=None,
+        stream_start=False,
         camera_images=None,
         camera_depths=None,
         camera_depth_valid_masks=None,
@@ -72,6 +78,8 @@ class AquaNet(BaseModel):
         mode="loss",
         **kwargs,
     ):
+        if stream_start:
+            self.reset()
         camera_images, position_embedding, twist, delta_poses, goal = self._stack_inputs(
             camera_images, position_embedding, twist, delta_poses, goal
         )

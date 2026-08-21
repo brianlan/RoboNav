@@ -9,6 +9,7 @@ import torch
 from mmengine.config import Config
 from mmengine.evaluator import Evaluator
 from mmengine.structures import BaseDataElement
+from prefusion.dataset.index_info import IndexInfo
 
 from robonav.aqua.metric import AquaTrajectoryMetric, frame_trajectory_metrics
 from robonav.aqua.hook.eval import AquaTrajectoryEvalHook
@@ -16,6 +17,7 @@ from robonav.aqua.loss import AquaLoss
 from robonav.aqua.model.aqua import AquaNet
 from robonav.aqua.model.trajectory_head import TrajectoryHead
 from robonav.aqua.runner.loop import AquaSequenceValLoop
+from robonav.common.model.data_preprocessor import FrameBatchMerger
 
 TERMS = ("traj_xy", "traj_yaw", "traj_unit", "traj_vel", "kin_pos", "kin_yaw", "depth")
 
@@ -196,6 +198,21 @@ def test_predict_output_contract():
         torch.testing.assert_close(outputs[0].pred_trajectory, trajectory[0].cpu())
 
 
+def test_frame_forward_resets_only_on_stream_start():
+    """Frame-oriented AquaNet owns the reset: it happens immediately before
+    a stream_start frame and never mid-stream."""
+    model = _predict_stub(4)
+    model.eval()
+
+    sentinel = object()
+    model.temporal_fuser.state = sentinel
+    model(**_predict_inputs(1, 4), mode="predict")
+    assert model.temporal_fuser.state is sentinel  # continuation: no reset
+
+    model(**_predict_inputs(1, 4), mode="predict", stream_start=True)
+    assert model.temporal_fuser.state is None  # boundary: AquaNet reset
+
+
 # ---------------------------------------------------------------------------
 # AquaSequenceValLoop
 # ---------------------------------------------------------------------------
@@ -203,9 +220,12 @@ def test_predict_output_contract():
 
 class FakeValModel:
     """val_step returns one prediction per sample plus the trailing loss
-    element; reset must be called once per outer sequence batch."""
+    element. Like BaseModel.val_step it runs the real FrameBatchMerger, and
+    like AquaNet it owns its reset: it performs it when the merged frame
+    batch carries the batch-level stream_start boundary."""
 
     def __init__(self):
+        self.data_preprocessor = FrameBatchMerger(device="cpu")
         self.reset_count = 0
         self.frames = []
 
@@ -216,6 +236,9 @@ class FakeValModel:
         self.reset_count += 1
 
     def val_step(self, frame_batch):
+        merged = self.data_preprocessor(frame_batch, training=False)
+        if merged["stream_start"]:
+            self.reset()
         self.frames.append(frame_batch)
         predictions = []
         for _ in frame_batch:
@@ -265,9 +288,18 @@ class FakeSequenceDataLoader:
         return iter(self.sequence_batches)
 
 
-def _frame(batch):
+def _occurrence(stream_start=False):
+    """Minimal Prefusion IndexInfo occurrence honoring the sampler contract."""
+    return IndexInfo("scene", "frame", stream_start=stream_start)
+
+
+def _frame(batch, stream_start=False):
     return [
-        dict(future_trajectory=torch.zeros(2, 7), twist=torch.zeros(3))
+        dict(
+            index_info=_occurrence(stream_start),
+            future_trajectory=torch.zeros(2, 7),
+            twist=torch.zeros(3),
+        )
         for _ in range(batch)
     ]
 
@@ -289,16 +321,19 @@ def test_val_loop_resets_processes_and_reports_global_count():
     model = FakeValModel()
     evaluator = RecordingEvaluator()
     # Arbitrary per-sequence batch sizes (2 and 3: the 3 includes an
-    # accepted duplicated sequence slot), 3 frames each.
+    # accepted duplicated sequence slot), 3 frames each. Only the first
+    # frame of each validation clip carries stream_start.
     sequence_batches = [
-        [_frame(2) for _ in range(3)],
-        [_frame(3) for _ in range(3)],
+        [_frame(2, stream_start=(t == 0)) for t in range(3)],
+        [_frame(3, stream_start=(t == 0)) for t in range(3)],
     ]
     loop, runner = _make_loop(model, evaluator, sequence_batches, sequence_length=3)
 
     metrics = loop.run()
 
-    assert model.reset_count == 2  # once per outer sequence batch
+    # exactly one model reset per validation clip, no mid-clip reset; the
+    # loop itself never resets the model
+    assert model.reset_count == 2
     assert len(model.frames) == 6  # every frame of every sequence
     assert loop._num_samples == 15  # 2*3 + 3*3 accepted samples
     assert len(evaluator.samples) == 15

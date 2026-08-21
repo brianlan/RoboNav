@@ -7,19 +7,15 @@ from robonav.registry import HOOKS
 __all__ = ["AquaTrajectoryEvalHook"]
 
 
-def _unwrap_model(runner):
-    model = runner.model
-    return model.module if hasattr(model, "module") else model
-
-
 @HOOKS.register_module()
 class AquaTrajectoryEvalHook(Hook):
     """Streaming trajectory evaluation for AquaNet test runs.
 
     ``SequenceBatchInferLoop`` never calls an evaluator, so this hook
-    resets the recurrent model at scene boundaries, accumulates scalar
-    per-frame metrics on CPU, and reports epoch aggregates. Predictions
-    are the mode="tensor" outputs (B, K, 7 layout
+    accumulates scalar per-frame metrics on CPU and reports epoch
+    aggregates. Recurrent state is the model's concern: AquaNet resets
+    itself on the ``stream_start`` the data pipeline marks at scene
+    starts. Predictions are the mode="tensor" outputs (B, K, 7 layout
     [x, y, sin(yaw), cos(yaw), vx, vy, omega]); ground truth comes from
     ``data_batch[0]["future_trajectory"]``. Metric names carry their
     units (m, rad, mps = m/s, radps = rad/s).
@@ -27,21 +23,12 @@ class AquaTrajectoryEvalHook(Hook):
 
     def __init__(self, delta_t=0.1):
         self.delta_t = delta_t
-        self._scene_id = None
         self._sums = {}
         self._frames = 0
 
     def before_test(self, runner):
-        self._scene_id = None
         self._sums = {}
         self._frames = 0
-        _unwrap_model(runner).reset()
-
-    def before_test_iter(self, runner, batch_idx, data_batch):
-        scene_id = data_batch[0]["index_info"].scene_id
-        if scene_id != self._scene_id:
-            _unwrap_model(runner).reset()
-            self._scene_id = scene_id
 
     def after_test_iter(
         self, runner, batch_idx, data_batch=None, outputs=None, mode="test"
