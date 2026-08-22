@@ -1,6 +1,9 @@
 import importlib.util
 import pickle
+import subprocess
+import sys
 import zipfile
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -228,6 +231,7 @@ def test_parse_arguments_num_future_trajectory_steps():
     required = ["--input-scene-root", "a", "--output-scene-root", "b"]
     args = converter.parse_arguments(required)
     assert args.num_future_trajectory_steps == 20
+    assert args.workers == 1
     assert args.visualize_future_trajectory is False
     assert args.visualize_ego_pose is False
     assert (
@@ -249,9 +253,166 @@ def test_parse_arguments_num_future_trajectory_steps():
         required + ["--visualize-future-trajectory", "--visualize-ego-pose"]
     )
     assert both.visualize_future_trajectory is True and both.visualize_ego_pose is True
+    assert converter.parse_arguments(required + ["--workers", "3"]).workers == 3
+    for value in ("0", "-3"):
+        with pytest.raises(SystemExit):
+            converter.parse_arguments(required + ["--workers", value])
     for value in ("0", "-3", "abc"):
         with pytest.raises(SystemExit):
             converter.parse_arguments(required + ["--num-future-trajectory-steps", value])
+
+
+def test_scene_selection_and_done_readiness(tmp_path, monkeypatch):
+    converter = _converter()
+    input_root = tmp_path / "input"
+    output_root = tmp_path / "output"
+    input_root.mkdir()
+    for name in ("000001", "000002", "named-scene"):
+        (input_root / name).mkdir()
+    (input_root / "000001" / "DONE").touch()
+    (input_root / "named-scene" / "DONE").touch()
+
+    assert [path.name for path in converter._select_scene_dirs(input_root, None)] == [
+        "000001",
+        "000002",
+    ]
+    assert [
+        path.name
+        for path in converter._select_scene_dirs(input_root, ["named-scene", "missing"])
+    ] == ["named-scene", "missing"]
+
+    selected = {}
+
+    def convert_scenes(scene_dirs, *args):
+        selected["ready"] = [path.name for path in scene_dirs]
+        selected["reasons"] = args[-1]
+        return 0, 0, 0, args[-1]
+
+    monkeypatch.setattr(converter, "_convert_scenes", convert_scenes)
+    assert converter.main(
+        [
+            "--input-scene-root",
+            str(input_root),
+            "--output-scene-root",
+            str(output_root),
+            "--scene-ids",
+            "named-scene",
+            "missing",
+        ]
+    ) == 1
+    assert selected == {
+        "ready": ["named-scene"],
+        "reasons": Counter({"source scene not ready": 1}),
+    }
+
+
+def test_workers_one_uses_serial_path_and_aggregates(tmp_path, monkeypatch):
+    converter = _converter()
+    scene_dirs = [tmp_path / "000001", tmp_path / "000002"]
+    calls = []
+
+    def convert_scene(scene_dir, **kwargs):
+        calls.append((scene_dir.name, kwargs["show_progress"]))
+        return 1, 2, 3, Counter({scene_dir.name: 1})
+
+    monkeypatch.setattr(converter, "_convert_scene", convert_scene)
+    monkeypatch.setattr(
+        converter,
+        "ProcessPoolExecutor",
+        lambda *args, **kwargs: pytest.fail("serial path created a process pool"),
+    )
+    result = converter._convert_scenes(
+        scene_dirs, tmp_path, False, 20, False, False, 1
+    )
+    assert result[:3] == (2, 4, 6)
+    assert result[3] == Counter({"000001": 1, "000002": 1})
+    assert calls == [("000001", True), ("000002", True)]
+    assert converter._convert_scenes([], tmp_path, False, 20, False, False, 2) == (
+        0,
+        0,
+        0,
+        Counter(),
+    )
+
+
+def test_cli_workers_two_processes_ready_scenes_and_reports_not_ready(tmp_path):
+    input_root = tmp_path / "input"
+    output_root = tmp_path / "output"
+    input_root.mkdir()
+    for name in ("000001", "000002", "000003"):
+        (input_root / name).mkdir()
+    for name in ("000001", "000002"):
+        (input_root / name / "DONE").touch()
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(_CONVERTER_PATH),
+            "--input-scene-root",
+            str(input_root),
+            "--output-scene-root",
+            str(output_root),
+            "--workers",
+            "2",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1, result.stderr
+    assert "processing scenes" in result.stderr
+    assert "summary source_scenes=3 ready_scenes=2 not_ready_scenes=1" in result.stderr
+    assert "successful_episodes=0 skipped=2" in result.stderr
+    assert "invalid source scene=2" in result.stderr
+    assert "source scene not ready=1" in result.stderr
+
+
+def test_load_cameras_loads_only_rendered_manifest_cameras(tmp_path, monkeypatch):
+    converter = _converter()
+    rendered = tmp_path / "rendered"
+    (rendered / "fisheye").mkdir(parents=True)
+    loaded = []
+
+    def load_camera(camera_dir, source_scene_id, episode, frame_count, profile):
+        loaded.append((camera_dir.name, profile))
+        return {"profile": profile}
+
+    monkeypatch.setattr(converter, "_load_camera", load_camera)
+    profiles = {
+        "pinhole": _profile("pinhole"),
+        "fisheye": _profile("opencv_fisheye", [0.1, -0.01, 0.002, 0.001]),
+    }
+    cameras = converter._load_cameras(rendered, "000001", 0, 1, profiles)
+    assert loaded == [("fisheye", profiles["fisheye"])]
+    assert cameras == {"fisheye": {"profile": profiles["fisheye"]}}
+
+
+def test_load_cameras_rejects_rendered_camera_missing_from_manifest(
+    tmp_path, monkeypatch
+):
+    converter = _converter()
+    rendered = tmp_path / "rendered"
+    (rendered / "front").mkdir(parents=True)
+    (rendered / "unlisted").mkdir(parents=True)
+    monkeypatch.setattr(
+        converter, "_load_camera", lambda *args: pytest.fail("loaded unknown camera")
+    )
+    with pytest.raises(
+        ValueError, match="missing from manifest camera_profiles.*unlisted"
+    ):
+        converter._load_cameras(
+            rendered, "000001", 0, 1, {"front": _profile("pinhole")}
+        )
+
+
+def test_load_cameras_requires_rendered_camera_directories(tmp_path):
+    converter = _converter()
+    rendered = tmp_path / "rendered"
+    rendered.mkdir(parents=True)
+    with pytest.raises(ValueError, match="rendered directory has no camera"):
+        converter._load_cameras(
+            rendered, "000001", 0, 1, {"front": _profile("pinhole")}
+        )
 
 
 def test_write_frame_pickle_contains_future_trajectory(tmp_path, monkeypatch):
