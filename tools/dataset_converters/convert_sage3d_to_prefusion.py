@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from functools import partial
 import json
 import math
 import pickle
@@ -44,6 +46,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--num-future-trajectory-steps", type=_positive_int, default=20)
     parser.add_argument("--visualize-future-trajectory", action="store_true")
     parser.add_argument("--visualize-ego-pose", action="store_true")
+    parser.add_argument("--workers", type=_positive_int, default=1)
     return parser.parse_args(argv)
 
 
@@ -60,24 +63,43 @@ def main(argv: list[str] | None = None) -> int:
         if not scene_dirs:
             logger.error("no source scenes selected")
             return 2
+        ready_scene_dirs = []
+        reasons: Counter[str] = Counter()
+        for scene_dir in scene_dirs:
+            if scene_dir.is_dir() and (scene_dir / "DONE").exists():
+                ready_scene_dirs.append(scene_dir)
+            else:
+                _warning(scene_dir.name, None, None, "source scene is not ready")
+                reasons["source scene not ready"] += 1
         succeeded, skipped, existing, reasons = _convert_scenes(
-            scene_dirs,
+            ready_scene_dirs,
             output_root,
             args.clone_camera_images,
             args.num_future_trajectory_steps,
             args.visualize_future_trajectory,
             args.visualize_ego_pose,
+            args.workers,
+            reasons,
         )
     except Exception as error:
         logger.error("fatal conversion error: {}", error)
         return 2
 
-    _report_summary(len(scene_dirs), succeeded, skipped, reasons)
+    _report_summary(
+        len(scene_dirs),
+        len(ready_scene_dirs),
+        len(scene_dirs) - len(ready_scene_dirs),
+        succeeded,
+        skipped,
+        reasons,
+    )
     return 0 if succeeded > 0 or existing > 0 else 1
 
 
 def _report_summary(
     source_scene_count: int,
+    ready_scene_count: int,
+    not_ready_scene_count: int,
     succeeded: int,
     skipped: int,
     reasons: Counter[str],
@@ -86,8 +108,11 @@ def _report_summary(
         ", ".join(f"{key}={value}" for key, value in sorted(reasons.items())) or "none"
     )
     logger.info(
-        "summary source_scenes={} successful_episodes={} skipped={} reasons={}",
+        "summary source_scenes={} ready_scenes={} not_ready_scenes={} "
+        "successful_episodes={} skipped={} reasons={}",
         source_scene_count,
+        ready_scene_count,
+        not_ready_scene_count,
         succeeded,
         skipped,
         reason_summary,
@@ -97,7 +122,11 @@ def _report_summary(
 def _select_scene_dirs(input_root: Path, scene_ids: list[str] | None) -> list[Path]:
     if scene_ids is not None:
         return [input_root / scene_id for scene_id in scene_ids]
-    return sorted(path for path in input_root.iterdir() if path.is_dir())
+    return sorted(
+        path
+        for path in input_root.iterdir()
+        if path.is_dir() and re.fullmatch(r"\d{6}", path.name)
+    )
 
 
 def _convert_scenes(
@@ -107,27 +136,43 @@ def _convert_scenes(
     num_future_trajectory_steps: int,
     visualize_future_trajectory: bool,
     visualize_ego_pose: bool,
+    workers: int,
+    reasons: Counter[str] | None = None,
 ) -> tuple[int, int, int, Counter[str]]:
-    reasons: Counter[str] = Counter()
+    reasons = Counter() if reasons is None else reasons
     succeeded = skipped = existing = 0
-    for scene_dir in scene_dirs:
-        if not scene_dir.is_dir():
-            _warning(scene_dir.name, None, None, "source scene directory is missing")
-            reasons["missing source scene"] += 1
-            skipped += 1
-            continue
-        scene_succeeded, scene_skipped, scene_existing = _convert_scene(
-            scene_dir,
-            output_root,
-            clone_images,
-            reasons,
-            num_future_trajectory_steps,
-            visualize_future_trajectory,
-            visualize_ego_pose,
-        )
-        succeeded += scene_succeeded
-        skipped += scene_skipped
-        existing += scene_existing
+    if not scene_dirs:
+        return succeeded, skipped, existing, reasons
+    convert_scene = partial(
+        _convert_scene,
+        output_root=output_root,
+        clone_images=clone_images,
+        num_future_trajectory_steps=num_future_trajectory_steps,
+        visualize_future_trajectory=visualize_future_trajectory,
+        visualize_ego_pose=visualize_ego_pose,
+        show_progress=workers == 1,
+    )
+    if workers == 1:
+        results = map(convert_scene, scene_dirs)
+        for scene_succeeded, scene_skipped, scene_existing, scene_reasons in results:
+            succeeded += scene_succeeded
+            skipped += scene_skipped
+            existing += scene_existing
+            reasons.update(scene_reasons)
+        return succeeded, skipped, existing, reasons
+
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(convert_scene, scene_dir) for scene_dir in scene_dirs]
+        for future in tqdm(
+            as_completed(futures), total=len(futures), desc="processing scenes"
+        ):
+            scene_succeeded, scene_skipped, scene_existing, scene_reasons = (
+                future.result()
+            )
+            succeeded += scene_succeeded
+            skipped += scene_skipped
+            existing += scene_existing
+            reasons.update(scene_reasons)
     return succeeded, skipped, existing, reasons
 
 
@@ -135,12 +180,14 @@ def _convert_scene(
     scene_dir: Path,
     output_root: Path,
     clone_images: bool,
-    reasons: Counter[str],
     num_future_trajectory_steps: int,
     visualize_future_trajectory: bool,
     visualize_ego_pose: bool,
-) -> tuple[int, int, int]:
+    *,
+    show_progress: bool = True,
+) -> tuple[int, int, int, Counter[str]]:
     source_scene_id = scene_dir.name
+    reasons: Counter[str] = Counter()
     try:
         profiles, control_dt, records, validated, manifest = _load_scene_inputs(
             scene_dir
@@ -148,10 +195,15 @@ def _convert_scene(
     except Exception as error:
         _warning(source_scene_id, None, None, str(error))
         reasons["invalid source scene"] += 1
-        return 0, 1, 0
+        return 0, 1, 0, reasons
 
     succeeded = skipped = existing = 0
-    for record in tqdm(records, desc=f"processing {source_scene_id}"):
+    progress = (
+        tqdm(records, desc=f"processing {source_scene_id}")
+        if show_progress
+        else records
+    )
+    for record in progress:
         episode: int | None = None
         try:
             episode = int(record["episode_index"])
@@ -187,7 +239,7 @@ def _convert_scene(
             )
             reasons["invalid episode"] += 1
             skipped += 1
-    return succeeded, skipped, existing
+    return succeeded, skipped, existing, reasons
 
 
 def _convert_episode(
@@ -1207,14 +1259,17 @@ def _load_cameras(
     frame_count: int,
     profiles: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
-    camera_dirs = [
-        path
-        for path in sorted(rendered.iterdir(), key=lambda path: path.name)
-        if path.is_dir() and path.name in profiles
-    ]
+    camera_dirs = sorted(
+        (path for path in rendered.iterdir() if path.is_dir()),
+        key=lambda path: path.name,
+    )
     if not camera_dirs:
+        raise ValueError("rendered directory has no camera directories")
+    unknown = sorted(path.name for path in camera_dirs if path.name not in profiles)
+    if unknown:
         raise ValueError(
-            "no rendered camera matches trajectory manifest camera_profiles"
+            f"rendered camera directories missing from manifest camera_profiles: "
+            f"{unknown}"
         )
     return {
         camera_dir.name: _load_camera(
