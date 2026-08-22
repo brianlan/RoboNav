@@ -9,14 +9,10 @@ permissions:
 jobs:
   tests:
     runs-on: ubuntu-latest
+    container: brianlan/prefusion@sha256:f118fa6071fa6a669dd362286704deea63748eaf229008dfc39880d59368f5dc
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.10"
       - name: Install dependencies
-        run: |
-          python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install "prefusion[test]==2.4.8" "plotly==6.2.0" "onnx==1.17.0"
+        run: python -m pip install "pytest==8.3.3" "plotly==6.2.0" "onnx==1.17.0"
       - name: Run tests
         run: python -m pytest -q
